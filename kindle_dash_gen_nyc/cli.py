@@ -15,6 +15,7 @@ from .config import Config, load_config
 from .format import format_eta, format_reading, format_temp, format_wind
 from .models import DashboardData, Direction
 from .render.openrouter import OpenRouterClient
+from .render.postprocess import post_process
 from .render.prompt import render_prompt
 from .sources.mta import MtaClient
 from .sources.weather import NwsClient, WeatherError
@@ -144,13 +145,13 @@ def dashboard_preview_prompt(ctx: typer.Context) -> None:
     data = _gather(cfg)
     client = OpenRouterClient(cfg.openrouter.model)
     aspect = client.resolve_aspect_ratio(
-        cfg.output.width, cfg.output.height, cfg.output.aspect_ratio
+        cfg.dashboard.width, cfg.dashboard.height, cfg.dashboard.aspect_ratio
     )
     prompt = render_prompt(
         data,
         units=cfg.weather.units,
-        width=cfg.output.width,
-        height=cfg.output.height,
+        width=cfg.dashboard.width,
+        height=cfg.dashboard.height,
         aspect=aspect,
         template=cfg.openrouter.prompt_template,
     )
@@ -161,29 +162,51 @@ def dashboard_preview_prompt(ctx: typer.Context) -> None:
 def dashboard_render(
     ctx: typer.Context,
     output_file: Annotated[
-        Path | None, typer.Argument(help="Where to write the PNG (defaults to output.path).")
+        Path | None, typer.Argument(help="Where to write the PNG (defaults to dashboard.path).")
     ] = None,
 ) -> None:
-    """Fetch live data, render the prompt, and generate the dashboard PNG via OpenRouter."""
+    """Fetch live data, render the prompt, and generate the dashboard PNG via OpenRouter.
+
+    Writes the raw generated image; run ``dashboard post-process`` to massage it for the Kindle.
+    """
     cfg = _config(ctx)
     data = _gather(cfg)
     client = OpenRouterClient(cfg.openrouter.model, cfg.openrouter.api_key.resolve())
     aspect = client.resolve_aspect_ratio(
-        cfg.output.width, cfg.output.height, cfg.output.aspect_ratio
+        cfg.dashboard.width, cfg.dashboard.height, cfg.dashboard.aspect_ratio
     )
     prompt = render_prompt(
         data,
         units=cfg.weather.units,
-        width=cfg.output.width,
-        height=cfg.output.height,
+        width=cfg.dashboard.width,
+        height=cfg.dashboard.height,
         aspect=aspect,
         template=cfg.openrouter.prompt_template,
     )
-    png = client.generate(prompt, aspect_ratio=aspect, resolution=cfg.output.resolution)
+    png = client.generate(prompt, aspect_ratio=aspect, resolution=cfg.dashboard.resolution)
 
-    path = output_file or cfg.output.path
+    path = output_file or cfg.dashboard.path
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(png)
+
+
+@dashboard_app.command("post-process")
+def dashboard_post_process(
+    ctx: typer.Context,
+    input_file: Annotated[Path, typer.Argument(help="Existing PNG to massage for the Kindle.")],
+    output_file: Annotated[Path, typer.Argument(help="Where to write the processed PNG.")],
+) -> None:
+    """Fit, grayscale, and quantize an existing PNG into a Kindle-ready image."""
+    cfg = _config(ctx)
+    png = post_process(
+        input_file.read_bytes(),
+        width=cfg.dashboard.width,
+        height=cfg.dashboard.height,
+        gray_levels=cfg.dashboard.gray_levels,
+        method=cfg.dashboard.post_process_method,
+    )
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    output_file.write_bytes(png)
 
 
 def run() -> None:

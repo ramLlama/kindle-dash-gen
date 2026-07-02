@@ -95,14 +95,21 @@ class OpenRouter(BaseModel):
     prompt_template: str = "dense"  # bundled template name, or a filesystem path to a .j2 file
 
 
-class Output(BaseModel):
+# How the generated image is fitted to the Kindle's exact pixel dimensions:
+#   resize -- stretch to fill, ignoring aspect (minor distortion)
+#   crop   -- scale to cover, center-crop the excess (no distortion, trims a sliver)
+#   pad    -- scale to fit, add white e-ink bars (nothing cropped or distorted)
+PostProcessMethod = Literal["resize", "crop", "pad"]
+
+
+class Dashboard(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     path: Path
     width: int = 1072  # Kindle Voyage, portrait (native orientation)
     height: int = 1448
     gray_levels: int = 16
-    rotate: int = 0
+    post_process_method: PostProcessMethod = "resize"
     aspect_ratio: str | None = None  # e.g. "4:3"; unset picks the model's nearest supported
     resolution: str | None = None  # e.g. "1K"; unset uses the model's default
 
@@ -120,7 +127,7 @@ class Config(BaseModel):
     weather: Weather
     stations: dict[str, Station]  # display name -> station board
     openrouter: OpenRouter
-    output: Output
+    dashboard: Dashboard
     schedule: Schedule = Schedule()
 
 

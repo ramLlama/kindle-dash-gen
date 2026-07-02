@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 
+from PIL import Image
 from typer.testing import CliRunner
 
 from kindle_dash_gen_nyc.cli import app
@@ -29,8 +31,10 @@ max_arrivals = 3
 model = "google/gemini-3.1-flash-lite-image"
 api_key = { value = "sk-or-test" }
 
-[output]
+[dashboard]
 path = "./out/dashboard.png"
+width = 100
+height = 140
 """
 
 
@@ -85,6 +89,21 @@ def test_dashboard_render_writes_generated_bytes_to_output_path(tmp_path, monkey
 
     assert result.exit_code == 0, result.output
     assert output_path.read_bytes() == b"FAKE-PNG-BYTES"
+
+
+def test_dashboard_post_process_writes_kindle_ready_image(tmp_path) -> None:
+    config_path = _write_config(tmp_path)
+    input_path = tmp_path / "raw.png"
+    output_path = tmp_path / "out" / "dash.png"  # parent dir does not exist yet
+    Image.new("RGB", (200, 150), (120, 120, 120)).save(input_path)  # non-target aspect
+
+    args = ["--config", str(config_path), "dashboard", "post-process"]
+    result = runner.invoke(app, [*args, str(input_path), str(output_path)])
+
+    assert result.exit_code == 0, result.output
+    out = Image.open(BytesIO(output_path.read_bytes()))
+    assert out.size == (100, 140)  # config width x height
+    assert out.mode == "L"
 
 
 def test_dashboard_preview_prompt_prints_without_generating(tmp_path, monkeypatch) -> None:

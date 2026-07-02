@@ -59,19 +59,23 @@ prompt_template = "dense"  # bundled template name, or a filesystem path to your
 
 # Custom templates (prompt_template pointing at your own file) are Jinja2 and get this context:
 #   weather -- WeatherReport | None      boards  -- list[StationBoard]
-#   units   -- "us" | "si" | "both"      width, height -- int (from [output] below)
+#   units   -- "us" | "si" | "both"      width, height -- int (from [dashboard] below)
 #   aspect  -- resolved aspect ratio, e.g. "4:3"     now -- datetime (= generation time)
 # Plus display-formatting helpers as globals:
 #   format_reading(temp, units)   format_apparent(temp, units)   format_temp(celsius, units)
 #   format_wind(kmh, direction, units)      format_eta(arrival, now)
 # See kindle_dash_gen_nyc/render/prompt.py and assets/dashboard_prompts/dense.j2 for details.
 
-[output]
+[dashboard]
 path = "./out/dashboard.png"
 width = 1072               # Kindle Voyage, portrait (native orientation)
 height = 1448
 gray_levels = 16           # Voyage 4-bit grayscale
-rotate = 0                 # degrees, if device mounting differs
+# How the generated image is fitted to width x height:
+#   "resize" -- stretch to fill, ignoring aspect (minor distortion)
+#   "crop"   -- scale to cover, center-crop the excess (no distortion, trims a sliver)
+#   "pad"    -- scale to fit, add white e-ink bars (nothing cropped or distorted)
+post_process_method = "resize"
 # aspect_ratio = "3:4"      # override the model's nearest-match aspect ratio; must be one it supports
 # resolution = "1K"         # override the model's default resolution; must be one it supports
 
