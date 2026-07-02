@@ -1,9 +1,13 @@
 """Tests for display formatting helpers."""
 
+from datetime import datetime, timedelta
+
 import pytest
 
-from kindle_dash_gen_nyc.format import format_reading, format_temp, format_wind
+from kindle_dash_gen_nyc.format import format_eta, format_reading, format_temp, format_wind
 from kindle_dash_gen_nyc.models import Temperature
+
+_NOW = datetime(2026, 7, 1, 12, 0, 0)
 
 
 @pytest.mark.parametrize(
@@ -45,3 +49,11 @@ def test_format_wind(kmh, direction, units, expected) -> None:
 )
 def test_format_reading(temp, units, expected) -> None:
     assert format_reading(temp, units) == expected
+
+
+@pytest.mark.parametrize(
+    "delta_minutes,expected",
+    [(3, "3 min"), (0, "0 min"), (-5, "0 min"), (2.4, "2 min"), (2.6, "3 min")],
+)
+def test_format_eta(delta_minutes: float, expected: str) -> None:
+    assert format_eta(_NOW + timedelta(minutes=delta_minutes), _NOW) == expected

@@ -23,6 +23,10 @@ dev = [
 [tool.uv]
 # Run in place from the clone (uv run python -m kindle_dash_gen_nyc); not a built/installed package.
 package = false
+# nyct-gtfs hard-pins protobuf==4.25.3, which crashes on Python 3.14 ("Metaclasses with
+# custom tp_new are not supported"). A modern protobuf works with its bindings.
+# See https://github.com/Andrew-Dickinson/nyct-gtfs/issues/10
+override-dependencies = ["protobuf>=6"]
 
 [tool.ruff]
 line-length = 100

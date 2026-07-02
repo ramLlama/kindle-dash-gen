@@ -15,12 +15,17 @@ longitude = -73.9857
 [weather]
 user_agent = "test-agent (test@example.com)"
 
-[[stations]]
-name = "Union Sq"
-lines = ["L", "N", "Q", "R", "W"]
+[stations."Union Sq"]
+max_arrivals = 3
+
+[[stations."Union Sq".platforms]]
+lines = ["N", "Q", "R", "W"]
 stop_id = "R20"
 direction = "both"
-max_arrivals = 3
+
+[[stations."Union Sq".platforms]]
+lines = ["L"]
+stop_id = "L03"
 
 [openrouter]
 model = "google/gemini-3.1-flash-lite-image"
@@ -45,8 +50,14 @@ def test_load_config_parses_all_sections(tmp_path: Path) -> None:
 
     assert cfg.location.latitude == 40.7484
     assert cfg.weather.units == "us"  # default
-    assert len(cfg.stations) == 1
-    assert cfg.stations[0].lines == ["L", "N", "Q", "R", "W"]
+    # Two platforms grouped under one station, merged into one board.
+    assert list(cfg.stations.keys()) == ["Union Sq"]
+    station = cfg.stations["Union Sq"]
+    assert station.max_arrivals == 3
+    assert len(station.platforms) == 2
+    assert station.platforms[0].lines == ["N", "Q", "R", "W"]
+    assert station.platforms[1].stop_id == "L03"
+    assert station.platforms[1].direction == "both"  # default
     assert cfg.openrouter.model == "google/gemini-3.1-flash-lite-image"
     assert cfg.output.width == 1448  # default
     assert cfg.output.gray_levels == 16  # default

@@ -1,7 +1,7 @@
-"""Domain data models produced by the sources and consumed by the renderer.
+"""Weather domain models.
 
-All weather values are stored in SI units (°C, km/h) at full precision; rounding to whole
-degrees happens only at display time in :mod:`kindle_dash_gen_nyc.format`.
+All values are SI (°C, km/h) at full precision; rounding to whole degrees happens only at
+display time in :mod:`kindle_dash_gen_nyc.format`.
 """
 
 from __future__ import annotations

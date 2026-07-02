@@ -64,14 +64,27 @@ class Weather(BaseModel):
     hourly_hours: int = 4  # number of upcoming hourly forecasts to include
 
 
-class Station(BaseModel):
+class Platform(BaseModel):
+    """One physical platform: a GTFS stop id plus the lines that serve it."""
+
     model_config = ConfigDict(extra="forbid")
 
-    name: str
     lines: list[str]
     stop_id: str
     direction: Literal["north", "south", "both"] = "both"
-    max_arrivals: int = 3
+
+
+class Station(BaseModel):
+    """A display board: one or more platforms merged, capped per direction.
+
+    Several platforms under one station are merged (e.g. the N/Q/R/W and the L platforms of
+    "Union Sq"); ``max_arrivals`` caps each direction across all of them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    platforms: list[Platform]
+    max_arrivals: int = 3  # per direction, across all platforms
 
 
 class OpenRouter(BaseModel):
@@ -103,7 +116,7 @@ class Config(BaseModel):
 
     location: Location
     weather: Weather
-    stations: list[Station]
+    stations: dict[str, Station]  # display name -> station board
     openrouter: OpenRouter
     output: Output
     schedule: Schedule = Schedule()

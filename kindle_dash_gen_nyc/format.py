@@ -5,9 +5,17 @@ Internal data is SI; these convert to the configured display units at output tim
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from .models import Temperature
 
 _KMH_TO_MPH = 0.621371
+
+
+def format_eta(arrival: datetime, now: datetime) -> str:
+    """Format an arrival time as whole minutes from now, e.g. "3 min" (never negative)."""
+    minutes = max(0, round((arrival - now).total_seconds() / 60))
+    return f"{minutes} min"
 
 
 def _c_to_f(celsius: float) -> int:
