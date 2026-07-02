@@ -1,0 +1,35 @@
+# Example configuration for kindle-dash-gen-nyc.
+# Copy to config.toml and edit. config.toml is gitignored (it may hold secrets).
+
+[location]                 # used by the NWS weather API
+latitude = 40.7484
+longitude = -73.9857
+
+[weather]
+user_agent = "kindle-dash-gen-nyc (you@example.com)"   # NWS requires a User-Agent
+units = "us"                                            # "us" or "si"
+
+# One [[stations]] block per station board you want on the dashboard.
+[[stations]]
+name = "Union Sq"
+lines = ["L", "N", "Q", "R", "W"]
+stop_id = "R20"            # GTFS base stop id; N/S suffix handled via direction
+direction = "both"         # "north", "south", or "both"
+max_arrivals = 3
+
+[openrouter]
+model = "google/gemini-3.1-flash-lite-image"
+# Provide the API key either inline or via a command that prints it:
+api_key = { value_from_cmd = "pass show openrouter/key" }
+# api_key = { value = "sk-or-..." }
+# prompt_template = "./my_prompt.j2"   # optional; omit to use the bundled default
+
+[output]
+path = "./out/dashboard.png"
+width = 1448               # Kindle Voyage, landscape
+height = 1072
+gray_levels = 16           # Voyage 4-bit grayscale
+rotate = 0                 # degrees, if device mounting differs
+
+[schedule]
+interval_minutes = 5
