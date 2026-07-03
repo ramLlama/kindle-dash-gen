@@ -78,11 +78,11 @@ def weather_icon(report: WeatherReport) -> str:
 
 
 def format_wind(kmh: float | None, direction: str, units: str) -> str:
-    """Format a wind speed (input km/h) and direction per display ``units`` (shows "mph"/"kmh")."""
+    """Format a wind speed (input km/h) and direction per display ``units`` (shows "mph"/"kmph")."""
     if kmh is None:
         return "—"
     mph = round(kmh * _KMH_TO_MPH)
-    metric = f"{round(kmh)} kmh"
+    metric = f"{round(kmh)} kmph"
     if units == "si":
         speed = metric
     elif units == "both":

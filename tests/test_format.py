@@ -55,10 +55,10 @@ def test_format_temp(celsius, units, expected) -> None:
 @pytest.mark.parametrize(
     "kmh,direction,units,expected",
     [
-        (16, "SW", "us", "10 mph SW"),  # 16 kmh ~= 10 mph
-        (16, "SW", "si", "16 kmh SW"),
-        (16, "SW", "both", "10 mph / 16 kmh SW"),
-        (10, "", "si", "10 kmh"),  # no direction -> no trailing space
+        (16, "SW", "us", "10 mph SW"),  # 16 kmph ~= 10 mph
+        (16, "SW", "si", "16 kmph SW"),
+        (16, "SW", "both", "10 mph / 16 kmph SW"),
+        (10, "", "si", "10 kmph"),  # no direction -> no trailing space
         (None, "SW", "us", "—"),
     ],
 )
