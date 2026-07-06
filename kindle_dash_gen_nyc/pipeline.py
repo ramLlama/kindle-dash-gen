@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from .config import Config
+from .config import Config, Dashboard
 from .models import DashboardData, StationBoard
 from .render import layout
 from .render.openrouter import OpenRouterClient
@@ -64,99 +65,119 @@ def _count_arrivals(boards: list[StationBoard]) -> int:
     )
 
 
-def build_prompt(cfg: Config, data: DashboardData, client: OpenRouterClient) -> tuple[str, str]:
+def build_prompt(
+    cfg: Config, data: DashboardData, client: OpenRouterClient, dash: Dashboard
+) -> tuple[str, str]:
     """Resolve the model's aspect ratio and render the OpenRouter prompt for ``data``.
 
     Returns ``(prompt, aspect_ratio)`` so the caller can pass the same aspect on to generate().
     """
-    aspect = client.resolve_aspect_ratio(
-        cfg.dashboard.width, cfg.dashboard.height, cfg.dashboard.aspect_ratio
-    )
+    aspect = client.resolve_aspect_ratio(dash.width, dash.height, dash.aspect_ratio)
     prompt = render_prompt(
         data,
         units=cfg.weather.units,
-        width=cfg.dashboard.width,
-        height=cfg.dashboard.height,
+        width=dash.width,
+        height=dash.height,
         aspect=aspect,
         template=cfg.openrouter.prompt_template,
     )
     return prompt, aspect
 
 
-def render(cfg: Config, data: DashboardData) -> bytes:
-    """Render ``data`` into a Kindle-ready PNG via the configured backend, then post-process.
+def render(cfg: Config, data: DashboardData, dash: Dashboard) -> bytes:
+    """Render ``data`` into a Kindle-ready PNG via ``dash``'s backend, then post-process.
 
     Both backends produce raw PNG bytes; ``post_process`` then grayscales, fits, and quantizes to
     the device's gray levels. For the pillow backend the image is already the exact panel size, so
     the fit step is a no-op and only the quantization matters.
     """
-    raw = render_raw(cfg, data)
+    raw = render_raw(cfg, data, dash)
     log.info(
         "post-processing %d bytes to %dx%d, %d gray levels (%s)",
         len(raw),
-        cfg.dashboard.width,
-        cfg.dashboard.height,
-        cfg.dashboard.gray_levels,
-        cfg.dashboard.post_process_method,
+        dash.width,
+        dash.height,
+        dash.gray_levels,
+        dash.post_process_method,
     )
     return post_process(
         raw,
-        width=cfg.dashboard.width,
-        height=cfg.dashboard.height,
-        gray_levels=cfg.dashboard.gray_levels,
-        method=cfg.dashboard.post_process_method,
+        width=dash.width,
+        height=dash.height,
+        gray_levels=dash.gray_levels,
+        method=dash.post_process_method,
     )
 
 
-def render_raw(cfg: Config, data: DashboardData) -> bytes:
-    """Render raw PNG bytes via the configured backend, before Kindle post-processing."""
-    if cfg.dashboard.backend == "pillow":
-        return _render_pillow(cfg, data)
-    return _render_llm(cfg, data)
+def render_raw(cfg: Config, data: DashboardData, dash: Dashboard) -> bytes:
+    """Render raw PNG bytes via ``dash``'s backend, before Kindle post-processing."""
+    if dash.backend == "pillow":
+        return _render_pillow(cfg, data, dash)
+    return _render_llm(cfg, data, dash)
 
 
-def _render_pillow(cfg: Config, data: DashboardData) -> bytes:
+def _render_pillow(cfg: Config, data: DashboardData, dash: Dashboard) -> bytes:
     """Draw the dashboard locally with the Pillow layout backend (raw PNG bytes)."""
-    log.info(
-        "rendering image via pillow layout %r (font %r)", cfg.dashboard.layout, cfg.dashboard.font
-    )
+    log.info("rendering image via pillow layout %r (font %r)", dash.layout, dash.font)
     return layout.render(
         data,
         units=cfg.weather.units,
-        width=cfg.dashboard.width,
-        height=cfg.dashboard.height,
-        layout=cfg.dashboard.layout,
-        font=cfg.dashboard.font,
+        width=dash.width,
+        height=dash.height,
+        layout=dash.layout,
+        font=dash.font,
     )
 
 
-def _render_llm(cfg: Config, data: DashboardData) -> bytes:
+def _render_llm(cfg: Config, data: DashboardData, dash: Dashboard) -> bytes:
     """Generate the dashboard via the OpenRouter image model backend (raw PNG bytes)."""
-    assert cfg.openrouter is not None  # guaranteed by Config validation when backend == "llm"
+    assert cfg.openrouter is not None  # guaranteed by Config validation when a backend == "llm"
     client = OpenRouterClient(cfg.openrouter.model, cfg.openrouter.api_key.resolve())
-    prompt, aspect = build_prompt(cfg, data, client)
+    prompt, aspect = build_prompt(cfg, data, client, dash)
     log.info("generating image via %s (aspect %s)", cfg.openrouter.model, aspect)
-    return client.generate(prompt, aspect_ratio=aspect, resolution=cfg.dashboard.resolution)
+    return client.generate(prompt, aspect_ratio=aspect, resolution=dash.resolution)
 
 
-def run_once(cfg: Config) -> Path | None:
-    """Gather, render, and write one dashboard image; return the path written, or ``None``.
+@dataclass(frozen=True)
+class RunResult:
+    """Outcome of one :func:`run_once`: which dashboards were written and which failed.
 
-    If every source failed (no weather and no boards), the render is skipped: writing a blank
-    dashboard would clobber the last good image and waste a paid generation, so the previous
-    output is left in place and ``None`` is returned.
+    ``written`` and ``failed`` are both empty when the render was skipped because every source was
+    unavailable (a legitimate no-op, distinct from ``failed`` being non-empty).
     """
-    log.info("dashboard render starting")
+
+    written: list[Path]
+    failed: list[str]  # names of dashboards whose render/write raised
+
+
+def run_once(cfg: Config) -> RunResult:
+    """Gather once, then render and write every configured dashboard; report the outcome.
+
+    Data is fetched a single time and shared across all dashboards. If every source failed (no
+    weather and no boards), the render is skipped entirely: writing a blank dashboard would clobber
+    the last good images and waste paid generations, so the previous outputs are left in place and
+    an empty :class:`RunResult` is returned. Dashboards are isolated from one another — a render or
+    write failure for one is logged (with its name) and the remaining dashboards still render; the
+    failed names are returned so a one-shot caller can exit non-zero.
+    """
+    log.info("dashboard render starting for %d dashboard(s)", len(cfg.dashboards))
     data = gather(cfg)
     if data.weather is None and len(data.boards) == 0:
-        log.warning("all sources unavailable; keeping the last dashboard image")
-        return None
-    png = render(cfg, data)
-    path = cfg.dashboard.path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_write(path, png)
-    log.info("wrote dashboard to %s", path)
-    return path
+        log.warning("all sources unavailable; keeping the last dashboard image(s)")
+        return RunResult(written=[], failed=[])
+    written: list[Path] = []
+    failed: list[str] = []
+    for name, dash in cfg.dashboards.items():
+        try:
+            png = render(cfg, data, dash)
+            dash.path.parent.mkdir(parents=True, exist_ok=True)
+            _atomic_write(dash.path, png)
+            log.info("wrote dashboard %r to %s", name, dash.path)
+            written.append(dash.path)
+        except Exception:  # isolate one dashboard's failure from the others
+            log.exception("dashboard %r failed to render; skipping it this iteration", name)
+            failed.append(name)
+    return RunResult(written=written, failed=failed)
 
 
 def _atomic_write(path: Path, data: bytes) -> None:

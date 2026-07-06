@@ -5,7 +5,6 @@ from __future__ import annotations
 from io import BytesIO
 from types import SimpleNamespace
 
-import pytest
 from PIL import Image
 
 from kindle_dash_gen_nyc import pipeline
@@ -19,14 +18,15 @@ CONFIG: dict = {
     "weather": {"user_agent": "test-agent (test@example.com)"},
     "stations": {"Union Sq": {"platforms": [{"lines": ["N", "Q"], "stop_id": "R20"}]}},
     "openrouter": {"model": "test/model", "api_key": {"value": "sk-or-test"}},
-    "dashboard": {"path": "out/dashboard.png", "width": 100, "height": 140},
+    "dashboards": {"main": {"path": "out/dashboard.png", "width": 100, "height": 140}},
     "schedule": {"interval_minutes": 5},
 }
 
 
 def _config(tmp_path) -> Config:
     cfg = Config.model_validate(CONFIG)
-    cfg.dashboard.path = tmp_path / "out" / "dashboard.png"  # parent dir does not exist yet
+    # parent dir does not exist yet
+    cfg.dashboards["main"].path = tmp_path / "out" / "dashboard.png"
     return cfg
 
 
@@ -118,12 +118,39 @@ def test_run_once_writes_kindle_ready_image(tmp_path, monkeypatch) -> None:
     _patch_render_clients(monkeypatch)
     cfg = _config(tmp_path)
 
-    path = pipeline.run_once(cfg)
+    result = pipeline.run_once(cfg)
 
-    assert path == cfg.dashboard.path
-    out = Image.open(BytesIO(path.read_bytes()))
+    assert result.written == [cfg.dashboards["main"].path]
+    assert result.failed == []
+    out = Image.open(BytesIO(result.written[0].read_bytes()))
     assert out.size == (100, 140)  # fitted to the configured dimensions
     assert out.mode == "L"  # grayscale for e-ink
+
+
+def test_run_once_renders_every_dashboard_from_one_gather(tmp_path, monkeypatch) -> None:
+    # Two dashboards render from a single data fetch, each to its own path and dimensions.
+    gathers = {"count": 0}
+    real_gather = pipeline.gather
+
+    def _counting_gather(cfg):
+        gathers["count"] += 1
+        return real_gather(cfg)
+
+    monkeypatch.setattr(pipeline, "NwsClient", _fake_nws(returns=None))
+    monkeypatch.setattr(pipeline, "MtaClient", _FakeMtaClientWithBoard)
+    monkeypatch.setattr(pipeline, "gather", _counting_gather)
+
+    cfg = _config(tmp_path)
+    cfg.dashboards["wide"] = cfg.dashboards["main"].model_copy(
+        update={"path": tmp_path / "out" / "wide.png", "width": 160, "height": 90}
+    )
+
+    result = pipeline.run_once(cfg)
+
+    assert gathers["count"] == 1  # data fetched exactly once, shared across dashboards
+    assert set(result.written) == {cfg.dashboards["main"].path, cfg.dashboards["wide"].path}
+    assert Image.open(BytesIO(cfg.dashboards["main"].path.read_bytes())).size == (100, 140)
+    assert Image.open(BytesIO(cfg.dashboards["wide"].path.read_bytes())).size == (160, 90)
 
 
 def test_run_loops_until_interrupted(monkeypatch) -> None:
@@ -166,11 +193,12 @@ def test_run_continues_after_iteration_failure(monkeypatch) -> None:
     assert calls["count"] == 2  # retried after the failure
 
 
-def test_run_once_propagates_unhandled_error(tmp_path, monkeypatch) -> None:
-    # A render failure (not an isolated source error) surfaces from run_once so the loop can
-    # log-and-retry; only per-source WeatherError/MtaError are swallowed inside gather().
+def test_run_once_isolates_a_failing_dashboard(tmp_path, monkeypatch) -> None:
+    # A render failure for one dashboard is caught and logged; the other dashboards still render.
+    # (Only per-source WeatherError/MtaError are swallowed inside gather(); render errors are
+    # isolated per dashboard here so one bad layout can't sink the rest.)
     monkeypatch.setattr(pipeline, "NwsClient", _fake_nws(returns=None))
-    monkeypatch.setattr(pipeline, "MtaClient", _FakeMtaClientWithBoard)
+    _patch_render_clients(monkeypatch)
 
     class _BoomClient(_FakeOpenRouterClient):
         def generate(self, prompt, *, aspect_ratio, resolution=None):
@@ -179,9 +207,16 @@ def test_run_once_propagates_unhandled_error(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(pipeline, "OpenRouterClient", _BoomClient)
 
     cfg = _config(tmp_path)
-    cfg.dashboard.backend = "llm"  # exercise the llm render path so the boom client is reached
-    with pytest.raises(RuntimeError):
-        pipeline.run_once(cfg)
+    # A pillow dashboard that renders fine, plus an llm one whose generate() explodes.
+    cfg.dashboards["broken"] = cfg.dashboards["main"].model_copy(
+        update={"path": tmp_path / "out" / "broken.png", "backend": "llm"}
+    )
+
+    result = pipeline.run_once(cfg)  # does not raise
+
+    assert result.written == [cfg.dashboards["main"].path]  # the healthy dashboard still wrote
+    assert result.failed == ["broken"]  # the failure is reported, not swallowed
+    assert not cfg.dashboards["broken"].path.exists()
 
 
 def test_run_once_skips_render_when_all_sources_down(tmp_path, monkeypatch) -> None:
@@ -189,15 +224,17 @@ def test_run_once_skips_render_when_all_sources_down(tmp_path, monkeypatch) -> N
     monkeypatch.setattr(pipeline, "NwsClient", _fake_nws(returns=None))
     monkeypatch.setattr(pipeline, "MtaClient", _FakeMtaClient)  # returns []
 
-    def _must_not_render(cfg, data):
+    def _must_not_render(cfg, data, dash):
         raise AssertionError("render() must not run when all sources are down")
 
     monkeypatch.setattr(pipeline, "render", _must_not_render)
     cfg = _config(tmp_path)
-    cfg.dashboard.path.parent.mkdir(parents=True)
-    cfg.dashboard.path.write_bytes(b"PREVIOUS-IMAGE")  # a prior good dashboard
+    path = cfg.dashboards["main"].path
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"PREVIOUS-IMAGE")  # a prior good dashboard
 
     result = pipeline.run_once(cfg)
 
-    assert result is None  # signals "nothing written"
-    assert cfg.dashboard.path.read_bytes() == b"PREVIOUS-IMAGE"  # last image preserved
+    assert result.written == []  # signals "nothing written"
+    assert result.failed == []  # skipped, not failed — a one-shot should still exit 0
+    assert path.read_bytes() == b"PREVIOUS-IMAGE"  # last image preserved

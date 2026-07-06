@@ -67,9 +67,11 @@ config.example.toml    # copy to config.toml (gitignored) and edit
 ## Architecture Overview
 
 Linear pipeline, wired in `pipeline.py`:
-`gather()` (fetch weather + subway, isolating each source) → `render_raw()` (dispatch on
-`dashboard.backend`) → `post_process()` (grayscale, fit, quantize) → atomic write to
-`dashboard.path`. `render_raw()` branches: the **pillow** backend calls `layout.render()` (draws
+`gather()` (fetch weather + subway **once**, isolating each source) → for each configured
+`[dashboards.<name>]`: `render_raw()` (dispatch on that dashboard's `backend`) → `post_process()`
+(grayscale, fit, quantize) → atomic write to the dashboard's `path`. `run_once()` returns a
+`RunResult(written, failed)`; one dashboard's render failure is isolated (logged, others proceed).
+`render_raw()` branches: the **pillow** backend calls `layout.render()` (draws
 `DashboardData` at native size); the **llm** backend does `build_prompt()` →
 `OpenRouterClient.generate()`. Both return raw PNG bytes, and `post_process()` is shared (for
 pillow the fit step is a no-op since it's already exact-sized, so only quantization applies). The
@@ -106,10 +108,13 @@ subcommand loads it on demand via `_config(ctx)`.
 - **Secrets never come from environment variables.** The OpenRouter API key is a `Secret`:
   either an inline `{ value = "..." }` or `{ value_from_cmd = "..." }` whose stdout is the key.
   This is a deliberate design choice, not an oversight — do not add env-var fallbacks.
-- **Two render backends.** `dashboard.backend` selects `"pillow"` (default: deterministic local
-  layout in `render/layout.py`; free, offline, exact — never garbles data) or `"llm"` (OpenRouter
-  image model). `[openrouter]` is optional and only required for the llm backend (a `Config`
-  validator enforces this). The pillow backend resolves its `font` family via fontconfig
+- **Multiple dashboards, one fetch.** Config has `dashboards: dict[str, Dashboard]` (named
+  `[dashboards.<name>]` tables). `gather()` runs once and every dashboard renders from that shared
+  data to its own `path`. `[openrouter]` is required only if *some* dashboard uses the llm backend.
+- **Two render backends.** Each dashboard's `backend` selects `"pillow"` (default: deterministic
+  local layout in `render/layout.py`; free, offline, exact — never garbles data) or `"llm"`
+  (OpenRouter image model). `[openrouter]` is optional and only required for the llm backend (a
+  `Config` validator enforces this). The pillow backend resolves its `font` family via fontconfig
   (`fc-match`) and pastes bundled `assets/icons/*.png`; a missing font/icon raises `LayoutError`.
 - **Per-source isolation.** In `gather()`, a `WeatherError` drops the weather panel and an
   `MtaError` drops the arrival boards; the render proceeds with whatever remains. Only these

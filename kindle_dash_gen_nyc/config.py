@@ -134,14 +134,16 @@ class Config(BaseModel):
     location: Location
     weather: Weather
     stations: dict[str, Station]  # display name -> station board
-    openrouter: OpenRouter | None = None  # required only when dashboard.backend == "llm"
-    dashboard: Dashboard
+    openrouter: OpenRouter | None = None  # required only when a dashboard's backend == "llm"
+    dashboards: dict[str, Dashboard]  # name -> output; one shared data fetch renders each
     schedule: Schedule = Schedule()
 
     @model_validator(mode="after")
-    def _backend_needs_openrouter(self) -> Config:
-        if self.dashboard.backend == "llm" and self.openrouter is None:
-            raise ValueError("dashboard.backend = 'llm' requires an [openrouter] section")
+    def _validate_dashboards(self) -> Config:
+        if len(self.dashboards) == 0:
+            raise ValueError("at least one [dashboards.<name>] section is required")
+        if self.openrouter is None and any(d.backend == "llm" for d in self.dashboards.values()):
+            raise ValueError("a dashboard with backend = 'llm' requires an [openrouter] section")
         return self
 
 

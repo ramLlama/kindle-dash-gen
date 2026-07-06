@@ -11,28 +11,32 @@ run() loop  ──every interval_minutes──▶  run_once(cfg)
                                              │
                                     gather(cfg) ──▶ DashboardData
                                              │        (weather?, boards, generated_at)
-                       all sources empty? ──▶ skip render, return None
+                       all sources empty? ──▶ skip render, return RunResult([], [])
                                              │
-                                    render(cfg, data):
-                                       render_raw(cfg, data) ──▶ raw PNG   # dispatch on backend
+                            for each [dashboards.<name>] (shared data):
+                                    render(cfg, data, dash):
+                                       render_raw(cfg, data, dash) ──▶ raw PNG   # dispatch on backend
                                           ├ pillow: layout.render(data, ...)
                                           └ llm:    build_prompt(...) + client.generate(...)
                                        post_process(raw, w, h, gray_levels, method) ──▶ PNG
                                              │
-                                    _atomic_write(dashboard.path, png)
+                                    _atomic_write(dash.path, png)   # per-dashboard, isolated
 ```
 
-`render_raw()` dispatches on `dashboard.backend`. The **pillow** backend (`_render_pillow`) draws
-locally; the **llm** backend (`_render_llm`) resolves the aspect ratio, renders the Jinja2 prompt,
-and calls the image model. Both return raw PNG bytes and share `post_process()`.
+`render_raw()` dispatches on the dashboard's `backend`. The **pillow** backend (`_render_pillow`)
+draws locally; the **llm** backend (`_render_llm`) resolves the aspect ratio, renders the Jinja2
+prompt, and calls the image model. Both return raw PNG bytes and share `post_process()`.
 
 - **`gather()`** constructs `NwsClient` and `MtaClient`, fetches from each inside its own
   try/except, and logs a degradation on `WeatherError` / `MtaError`. Returns `DashboardData`
   with `weather=None` and/or `boards=[]` on partial failure.
-- **`run_once()`** short-circuits when both sources are empty: writing a blank dashboard would
-  clobber the last good image and waste a paid generation, so it returns `None` instead.
+- **`run_once()`** gathers once, then renders every `[dashboards.<name>]` from that shared data,
+  each to its own `path`. It short-circuits when both sources are empty: writing a blank dashboard
+  would clobber the last good images and waste paid generations, so it returns an empty `RunResult`
+  instead. A single dashboard's render/write failure is isolated (logged, others proceed) and its
+  name collected in `RunResult.failed`, which the `run --one-shot` CLI turns into a non-zero exit.
 - **`run()`** wraps `run_once()` in a `while True` + `time.sleep`. Any unexpected exception
-  (i.e. not an isolated per-source error, which `gather` already swallowed) is logged via
+  (i.e. not an isolated per-source or per-dashboard error, both already swallowed) is logged via
   `log.exception` and retried next interval. `KeyboardInterrupt` exits cleanly.
 - Logging is stdlib `logging` configured in the `run` CLI command (INFO, `%H:%M:%S`).
 
@@ -79,7 +83,7 @@ All parsing failures raise `WeatherError`. Values stay SI at full precision.
 
 ## Render
 
-Two backends produce raw PNG bytes from `DashboardData`, selected by `dashboard.backend`
+Two backends produce raw PNG bytes from `DashboardData`, selected per dashboard by its `backend`
 (`"pillow"` default, `"llm"` opt-in). `post_process()` is shared by both.
 
 ### Layout — pillow backend (render/layout.py)

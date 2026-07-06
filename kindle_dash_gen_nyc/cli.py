@@ -12,7 +12,7 @@ from typing import Annotated
 import typer
 
 from . import __version__, pipeline
-from .config import Config, load_config
+from .config import Config, Dashboard, load_config
 from .format import format_eta, format_reading, format_temp, format_wind
 from .models import Direction
 from .render.openrouter import OpenRouterClient
@@ -47,6 +47,32 @@ def _config(ctx: typer.Context) -> Config:
     return load_config(ctx.obj)
 
 
+NameOption = Annotated[
+    list[str] | None,
+    typer.Option("--name", "-n", help="Dashboard name(s) to act on; repeatable. Default: all."),
+]
+
+
+def _selected_dashboards(cfg: Config, names: list[str] | None) -> dict[str, Dashboard]:
+    """Every dashboard, or just the named subset (error on any unknown name)."""
+    if names is None or len(names) == 0:
+        return cfg.dashboards
+    unknown = [n for n in names if n not in cfg.dashboards]
+    if len(unknown) > 0:
+        raise typer.BadParameter(f"unknown dashboard(s) {unknown}; have: {sorted(cfg.dashboards)}")
+    return {n: cfg.dashboards[n] for n in names}
+
+
+def _one_dashboard(cfg: Config, names: list[str] | None) -> tuple[str, Dashboard]:
+    """Exactly one dashboard: the sole configured one, or a single --name; error otherwise."""
+    selected = _selected_dashboards(cfg, names)
+    if len(selected) != 1:
+        raise typer.BadParameter(
+            f"this command acts on one dashboard; pass a single --name (have {sorted(selected)})"
+        )
+    return next(iter(selected.items()))
+
+
 @app.command()
 def version() -> None:
     """Print the version."""
@@ -61,17 +87,22 @@ def run_dashboard(
         typer.Option("--one-shot", help="Run a single iteration and exit instead of looping."),
     ] = False,
 ) -> None:
-    """Generate the Kindle dashboard on the configured interval (or once with ``--one-shot``).
+    """Generate the Kindle dashboard(s) on the configured interval (or once with ``--one-shot``).
 
-    Each run gathers weather + subway data, renders the image via OpenRouter, post-processes
-    it for the Kindle, and writes it to the dashboard.path in your config.
+    Each run gathers weather + subway data once, then renders every configured dashboard,
+    post-processes each for the Kindle, and writes it to that dashboard's path in your config.
     """
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S"
     )
     cfg = _config(ctx)
     if one_shot:
-        pipeline.run_once(cfg)
+        # Surface render failures to the exit code so a cron/systemd one-shot doesn't report
+        # success when a dashboard silently failed. "All sources down" is a legitimate skip (no
+        # failures), so it still exits 0. The loop, by contrast, just retries next interval.
+        result = pipeline.run_once(cfg)
+        if len(result.failed) > 0:
+            raise typer.Exit(code=1)
     else:
         pipeline.run(cfg)
 
@@ -144,36 +175,43 @@ def mta_list_stations() -> None:
 
 
 @dashboard_app.command("preview-prompt")
-def dashboard_preview_prompt(ctx: typer.Context) -> None:
+def dashboard_preview_prompt(ctx: typer.Context, names: NameOption = None) -> None:
     """Fetch live data and print the OpenRouter prompt without generating an image (debug)."""
     cfg = _config(ctx)
     if cfg.openrouter is None:
         raise typer.BadParameter("preview-prompt applies only to the 'llm' backend ([openrouter])")
+    _, dash = _one_dashboard(cfg, names)
     data = pipeline.gather(cfg)
     client = OpenRouterClient(cfg.openrouter.model)
-    prompt, _ = pipeline.build_prompt(cfg, data, client)
+    prompt, _ = pipeline.build_prompt(cfg, data, client, dash)
     typer.echo(prompt)
 
 
 @dashboard_app.command("render")
 def dashboard_render(
     ctx: typer.Context,
+    names: NameOption = None,
     output_file: Annotated[
-        Path | None, typer.Argument(help="Where to write the PNG (defaults to dashboard.path).")
+        Path | None,
+        typer.Argument(help="Write a single dashboard's PNG here (needs one --name if several)."),
     ] = None,
 ) -> None:
-    """Fetch live data and render the dashboard PNG via the configured backend.
+    """Fetch live data once and render every dashboard's PNG via its configured backend.
 
-    Writes the raw rendered image (before Kindle post-processing); run ``dashboard post-process``
-    to massage it for the device.
+    Writes the raw rendered image (before Kindle post-processing) to each dashboard's path; run
+    ``dashboard post-process`` to massage it for the device. Restrict to a subset with repeated
+    ``--name``, and pass an output path to redirect a single dashboard elsewhere.
     """
     cfg = _config(ctx)
-    data = pipeline.gather(cfg)
-    png = pipeline.render_raw(cfg, data)
-
-    path = output_file or cfg.dashboard.path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(png)
+    selected = _selected_dashboards(cfg, names)
+    if output_file is not None and len(selected) > 1:
+        raise typer.BadParameter("output_file writes one dashboard; pass a single --name")
+    data = pipeline.gather(cfg)  # one fetch, shared across all rendered dashboards
+    for dash in selected.values():
+        png = pipeline.render_raw(cfg, data, dash)
+        path = output_file or dash.path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(png)
 
 
 @dashboard_app.command("post-process")
@@ -181,15 +219,17 @@ def dashboard_post_process(
     ctx: typer.Context,
     input_file: Annotated[Path, typer.Argument(help="Existing PNG to massage for the Kindle.")],
     output_file: Annotated[Path, typer.Argument(help="Where to write the processed PNG.")],
+    names: NameOption = None,
 ) -> None:
-    """Fit, grayscale, and quantize an existing PNG into a Kindle-ready image."""
+    """Fit, grayscale, and quantize an existing PNG into a Kindle-ready image (per dashboard)."""
     cfg = _config(ctx)
+    _, dash = _one_dashboard(cfg, names)
     png = post_process(
         input_file.read_bytes(),
-        width=cfg.dashboard.width,
-        height=cfg.dashboard.height,
-        gray_levels=cfg.dashboard.gray_levels,
-        method=cfg.dashboard.post_process_method,
+        width=dash.width,
+        height=dash.height,
+        gray_levels=dash.gray_levels,
+        method=dash.post_process_method,
     )
     output_file.parent.mkdir(parents=True, exist_ok=True)
     output_file.write_bytes(png)

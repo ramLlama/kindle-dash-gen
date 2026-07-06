@@ -49,8 +49,8 @@ max_arrivals = 3
   stop_id = "D19"
   direction = "both"
 
-# [openrouter] is only needed when dashboard.backend = "llm" (below). The default pillow backend
-# draws the dashboard locally and needs no API key, so you can delete this whole section.
+# [openrouter] is only needed when some dashboard uses backend = "llm" (below). The default pillow
+# backend draws the dashboard locally and needs no API key, so you can delete this whole section.
 [openrouter]
 model = "google/gemini-3.1-flash-lite-image"
 # Provide the API key either inline or via a command that prints it:
@@ -61,7 +61,7 @@ prompt_template = "dense"  # bundled template name, or a filesystem path to your
 
 # Custom templates (prompt_template pointing at your own file) are Jinja2 and get this context:
 #   weather -- WeatherReport | None      boards  -- list[StationBoard]
-#   units   -- "us" | "si" | "both"      width, height -- int (from [dashboard] below)
+#   units   -- "us" | "si" | "both"      width, height -- int (from [dashboards.<name>] below)
 #   aspect  -- resolved aspect ratio, e.g. "4:3"     now -- datetime (= generation time)
 # Plus display-formatting helpers as globals:
 #   format_reading(temp, units)   format_apparent(temp, units)   format_temp(celsius, units)
@@ -69,7 +69,10 @@ prompt_template = "dense"  # bundled template name, or a filesystem path to your
 #   weather_icon(report) -> "sunny" | "cloudy" | "rain" | "snow"
 # See kindle_dash_gen_nyc/render/prompt.py and assets/dashboard_prompts/dense.j2 for details.
 
-[dashboard]
+# One or more output dashboards, each keyed by a name ([dashboards.<name>]). A single run gathers
+# the weather + subway data once and renders every dashboard from it, writing each to its own path.
+# The name appears in the run's log lines. At least one dashboard is required.
+[dashboards.main]
 path = "./out/dashboard.png"
 # Rendering backend:
 #   "pillow" -- draw the dashboard locally (free, offline, exact); no [openrouter] needed
@@ -88,6 +91,13 @@ gray_levels = 16           # Voyage 4-bit grayscale
 post_process_method = "resize"
 # aspect_ratio = "3:4"      # llm backend: override the model's nearest-match aspect ratio
 # resolution = "1K"         # llm backend: override the model's default resolution
+
+# A second dashboard rendered from the same data to a different path (e.g. a second device, or a
+# landscape variant). Delete this block if you only need one output.
+# [dashboards.landscape]
+# path = "./out/dashboard-landscape.png"
+# width = 1448
+# height = 1072
 
 [schedule]
 interval_minutes = 5

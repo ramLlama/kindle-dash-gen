@@ -31,7 +31,7 @@ stop_id = "L03"
 model = "google/gemini-3.1-flash-lite-image"
 api_key = { value = "sk-or-test" }
 
-[dashboard]
+[dashboards.main]
 path = "./out/dashboard.png"
 
 [schedule]
@@ -59,11 +59,12 @@ def test_load_config_parses_all_sections(tmp_path: Path) -> None:
     assert station.platforms[1].stop_id == "L03"
     assert station.platforms[1].direction == "both"  # default
     assert cfg.openrouter.model == "google/gemini-3.1-flash-lite-image"
-    assert cfg.dashboard.width == 1072  # default (portrait)
-    assert cfg.dashboard.gray_levels == 16  # default
-    assert cfg.dashboard.post_process_method == "resize"  # default
-    assert cfg.dashboard.backend == "pillow"  # default backend
-    assert cfg.dashboard.layout == "glanceable"  # default pillow layout
+    dash = cfg.dashboards["main"]
+    assert dash.width == 1072  # default (portrait)
+    assert dash.gray_levels == 16  # default
+    assert dash.post_process_method == "resize"  # default
+    assert dash.backend == "pillow"  # default backend
+    assert dash.layout == "glanceable"  # default pillow layout
     assert cfg.schedule.interval_minutes == 5
 
 
@@ -85,11 +86,30 @@ def test_pillow_backend_needs_no_openrouter(tmp_path: Path) -> None:
     # The default (pillow) backend needs no [openrouter] section.
     cfg = load_config(_write(tmp_path, _without_openrouter(EXAMPLE)))
     assert cfg.openrouter is None
-    assert cfg.dashboard.backend == "pillow"
+    assert cfg.dashboards["main"].backend == "pillow"
 
 
 def test_llm_backend_requires_openrouter(tmp_path: Path) -> None:
-    text = _without_openrouter(EXAMPLE).replace("[dashboard]\n", '[dashboard]\nbackend = "llm"\n')
+    text = _without_openrouter(EXAMPLE).replace(
+        "[dashboards.main]\n", '[dashboards.main]\nbackend = "llm"\n'
+    )
+    with pytest.raises(ValidationError):
+        load_config(_write(tmp_path, text))
+
+
+def test_multiple_dashboards_parse(tmp_path: Path) -> None:
+    # Several named [dashboards.<name>] blocks load into the dict, each with its own settings.
+    text = EXAMPLE + (
+        '\n[dashboards.landscape]\npath = "./out/landscape.png"\nwidth = 1448\nheight = 1072\n'
+    )
+    cfg = load_config(_write(tmp_path, text))
+    assert set(cfg.dashboards) == {"main", "landscape"}
+    assert cfg.dashboards["landscape"].width == 1448
+    assert cfg.dashboards["main"].width == 1072  # default, untouched
+
+
+def test_at_least_one_dashboard_required(tmp_path: Path) -> None:
+    text = EXAMPLE.replace('[dashboards.main]\npath = "./out/dashboard.png"\n', "")
     with pytest.raises(ValidationError):
         load_config(_write(tmp_path, text))
 
