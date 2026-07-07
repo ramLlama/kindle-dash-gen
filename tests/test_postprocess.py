@@ -25,9 +25,7 @@ def _open(png: bytes) -> Image.Image:
 
 def test_resize_produces_exact_dimensions_and_grayscale() -> None:
     out = _open(
-        post_process(
-            _gradient_png(64, 48), width=32, height=48, gray_levels=16, method="resize"
-        )
+        post_process(_gradient_png(64, 48), width=32, height=48, gray_levels=16, method="resize")
     )
     assert out.size == (32, 48)
     assert out.mode == "L"
@@ -37,9 +35,7 @@ def test_crop_covers_without_introducing_white_bars() -> None:
     # Landscape source into a portrait target: crop scales to cover and trims the excess,
     # so no white padding is introduced (the gradient tops out well below 255).
     out = _open(
-        post_process(
-            _gradient_png(64, 48), width=32, height=48, gray_levels=16, method="crop"
-        )
+        post_process(_gradient_png(64, 48), width=32, height=48, gray_levels=16, method="crop")
     )
     assert out.size == (32, 48)
     assert out.getextrema()[1] < 255
@@ -49,9 +45,7 @@ def test_pad_adds_white_bars() -> None:
     # Same landscape-into-portrait fit, but pad preserves the whole image and fills the
     # leftover strip with white e-ink background.
     out = _open(
-        post_process(
-            _gradient_png(64, 48), width=32, height=48, gray_levels=16, method="pad"
-        )
+        post_process(_gradient_png(64, 48), width=32, height=48, gray_levels=16, method="pad")
     )
     assert out.size == (32, 48)
     assert out.getpixel((0, 0)) == 255  # top bar
@@ -72,6 +66,4 @@ def test_gray_levels_snaps_to_evenly_spaced_palette() -> None:
 
 def test_gray_levels_below_two_raises() -> None:
     with pytest.raises(ValueError):
-        post_process(
-            _gradient_png(64, 48), width=32, height=48, gray_levels=1, method="resize"
-        )
+        post_process(_gradient_png(64, 48), width=32, height=48, gray_levels=1, method="resize")

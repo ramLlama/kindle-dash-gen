@@ -71,10 +71,18 @@ def _daily(name: str, start: str, end: str, daytime: bool, temp: int) -> dict:
 FORECAST = {
     "properties": {
         "periods": [
-            _daily("This Afternoon", "2026-07-01T14:00:00-04:00", "2026-07-01T18:00:00-04:00", True, 34),  # noqa: E501
+            _daily(
+                "This Afternoon", "2026-07-01T14:00:00-04:00", "2026-07-01T18:00:00-04:00", True, 34
+            ),  # noqa: E501
             _daily("Tonight", "2026-07-01T18:00:00-04:00", "2026-07-02T06:00:00-04:00", False, 24),
             _daily("Thursday", "2026-07-02T06:00:00-04:00", "2026-07-02T18:00:00-04:00", True, 38),
-            _daily("Thursday Night", "2026-07-02T18:00:00-04:00", "2026-07-03T06:00:00-04:00", False, 26),  # noqa: E501
+            _daily(
+                "Thursday Night",
+                "2026-07-02T18:00:00-04:00",
+                "2026-07-03T06:00:00-04:00",
+                False,
+                26,
+            ),  # noqa: E501
         ]
     }
 }

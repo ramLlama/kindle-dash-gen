@@ -73,6 +73,7 @@ def build_prompt(
 
     Returns ``(prompt, aspect_ratio)`` so the caller can pass the same aspect on to generate().
     """
+    assert cfg.openrouter is not None  # only called for the llm backend, which requires it
     aspect = client.resolve_aspect_ratio(dash.width, dash.height, dash.aspect_ratio)
     prompt = render_prompt(
         data,

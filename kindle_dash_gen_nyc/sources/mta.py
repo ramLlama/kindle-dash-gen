@@ -40,9 +40,7 @@ class MtaError(RuntimeError):
 class MtaClient:
     """Loads the needed GTFS-realtime feeds and builds a merged board per station name."""
 
-    def __init__(
-        self, stations: dict[str, Station], feed_loader: FeedLoader | None = None
-    ) -> None:
+    def __init__(self, stations: dict[str, Station], feed_loader: FeedLoader | None = None) -> None:
         self._stations = stations
         self._feed_loader = feed_loader or (lambda url: NYCTFeed(url))
 
@@ -50,10 +48,7 @@ class MtaClient:
         """Load every needed feed once and build a board for each station name."""
         now = now or datetime.now()
         feeds = self._load_feeds()
-        return [
-            self._board(name, station, feeds, now)
-            for name, station in self._stations.items()
-        ]
+        return [self._board(name, station, feeds, now) for name, station in self._stations.items()]
 
     def _load_feeds(self) -> dict[str, NYCTFeed]:
         urls = {

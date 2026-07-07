@@ -32,7 +32,7 @@ _MARGIN = 44
 def _load_icon(name: str, size: int) -> tuple[Image.Image, Image.Image]:
     """Load this plugin's icon ``name`` at ``size`` px as (grayscale, alpha mask)."""
     icon = load_asset_image(_PACKAGE, f"assets/icons/{name}.png")
-    icon = icon.convert("LA").resize((size, size), Image.LANCZOS)
+    icon = icon.convert("LA").resize((size, size), Image.Resampling.LANCZOS)
     return icon.getchannel("L"), icon.getchannel("A")
 
 
@@ -75,8 +75,13 @@ class _Glanceable:
         # sit the time on the same baseline as "NYC" (ascent below the cap line)
         baseline = y + nyc.getmetrics()[0]
         label = when.strftime("%a %b %-d, %-I:%M %p")
-        self.d.text((self.w - _MARGIN, baseline), label, font=self.fonts.get(30, "Medium"),
-                    fill=INK, anchor="rs")
+        self.d.text(
+            (self.w - _MARGIN, baseline),
+            label,
+            font=self.fonts.get(30, "Medium"),
+            fill=INK,
+            anchor="rs",
+        )
         rule = y + 96
         self.d.line((_MARGIN, rule, self.w - _MARGIN, rule), fill=INK, width=5)
         return rule + 28
@@ -86,13 +91,14 @@ class _Glanceable:
         temp = format_apparent(weather.temperature, self.units)
         temp_font = fit_font(self.fonts, temp, "Black", 190, self.w - 2 * _MARGIN - icon_slot - 30)
         self.d.text((_MARGIN, y), temp, font=temp_font, fill=INK, anchor="la")
-        temp_h = temp_font.getbbox(temp)[3]
+        temp_h = int(temp_font.getbbox(temp)[3])
 
         # wind row beneath the temperature (metric text only, no icon)
         wind_cy = y + temp_h + 40
         wind = format_wind(weather.wind_speed_kmh, weather.wind_direction, self.units)
-        self.d.text((_MARGIN, wind_cy), wind, font=self.fonts.get(40, "Medium"),
-                    fill=INK, anchor="lm")
+        self.d.text(
+            (_MARGIN, wind_cy), wind, font=self.fonts.get(40, "Medium"), fill=INK, anchor="lm"
+        )
 
         bottom = wind_cy + 46
         # weather icon: as large as the section allows, vertically centered on the right
@@ -116,8 +122,13 @@ class _Glanceable:
         for i, h in enumerate(hours):
             x0 = _MARGIN + i * (col_w + gap)
             cx = x0 + col_w / 2
-            self.d.text((cx, y), h.time.strftime("%-I%p").lower(),
-                        font=self.fonts.get(34, "Medium"), fill=INK, anchor="ma")
+            self.d.text(
+                (cx, y),
+                h.time.strftime("%-I%p").lower(),
+                font=self.fonts.get(34, "Medium"),
+                fill=INK,
+                anchor="ma",
+            )
             self.d.line((x0, y + 48, x0 + col_w, y + 48), fill=INK, width=2)
             # sized a bit under the column width so the temperature keeps a margin inside the column
             temp = format_apparent(h.temperature, self.units)
@@ -138,13 +149,15 @@ class _Glanceable:
         self.d.line((_MARGIN, bottom, self.w - _MARGIN, bottom), fill=INK, width=3)
         return bottom + 30
 
-    def _direction_block(self, x: float, y: float, w: float, label: str,
-                         arrivals: list[TrainArrival], pitch: float) -> float:
+    def _direction_block(
+        self, x: float, y: float, w: float, label: str, arrivals: list[TrainArrival], pitch: float
+    ) -> float:
         self.d.text((x, y), label, font=self.fonts.get(32, "Bold"), fill=INK, anchor="la")
         y += 52
         if len(arrivals) == 0:
-            self.d.text((x + 12, y), "No trains", font=self.fonts.get(34, "Regular"),
-                        fill=INK, anchor="la")
+            self.d.text(
+                (x + 12, y), "No trains", font=self.fonts.get(34, "Regular"), fill=INK, anchor="la"
+            )
             return y + pitch
         # This deterministic layout is sized for 3 rows per direction; it shows the soonest 3 of
         # the (uncapped) board and drops the rest. Truncation is the layout's call, not the fetch's.
@@ -153,11 +166,17 @@ class _Glanceable:
             # a shared baseline so the all-caps route lines up with the time's descenders
             baseline = y + pitch * 0.4 + 16
             clock = f"{a.arrival.strftime('%-I:%M')} {a.arrival.strftime('%p').lower()}"
-            self.d.text((x + 6, baseline), clock, font=self.fonts.get(46, "Medium"),
-                        fill=INK, anchor="ls")
+            self.d.text(
+                (x + 6, baseline), clock, font=self.fonts.get(46, "Medium"), fill=INK, anchor="ls"
+            )
             # center each route letter on a common x so they line up regardless of glyph width
-            self.d.text((x + w - 28, baseline), a.route, font=self.fonts.get(50, "Black"),
-                        fill=INK, anchor="ms")
+            self.d.text(
+                (x + w - 28, baseline),
+                a.route,
+                font=self.fonts.get(50, "Black"),
+                fill=INK,
+                anchor="ms",
+            )
             y += pitch
         return y + 8
 
@@ -178,7 +197,7 @@ class _Glanceable:
             self.d.text((x, y), board.name, font=self.fonts.get(44, "Bold"), fill=INK, anchor="la")
             name_b = y + 58
             self.d.line((x, name_b, x + col_w, name_b), fill=INK, width=2)
-            cy = name_b + 18
+            cy: float = name_b + 18
             north = board.arrivals_by_direction.get(Direction.NORTH, [])
             south = board.arrivals_by_direction.get(Direction.SOUTH, [])
             cy = self._direction_block(x, cy, col_w, "Uptown", north, pitch)

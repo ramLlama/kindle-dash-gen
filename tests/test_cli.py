@@ -108,9 +108,10 @@ def test_dashboard_render_renders_all_dashboards_from_one_gather(tmp_path, monke
 
     first_path = tmp_path / "out" / "first.png"
     second_path = tmp_path / "out" / "second.png"
-    text = CONFIG.replace(
-        'path = "./out/dashboard.png"', f'path = "{first_path.as_posix()}"'
-    ) + f'\n[dashboards.second]\nbackend = "llm"\npath = "{second_path.as_posix()}"\n'
+    text = (
+        CONFIG.replace('path = "./out/dashboard.png"', f'path = "{first_path.as_posix()}"')
+        + f'\n[dashboards.second]\nbackend = "llm"\npath = "{second_path.as_posix()}"\n'
+    )
     config_path = tmp_path / "config.toml"
     config_path.write_text(text)
 
@@ -128,9 +129,10 @@ def test_dashboard_render_name_selects_a_subset(tmp_path, monkeypatch) -> None:
 
     first_path = tmp_path / "out" / "first.png"
     second_path = tmp_path / "out" / "second.png"
-    text = CONFIG.replace(
-        'path = "./out/dashboard.png"', f'path = "{first_path.as_posix()}"'
-    ) + f'\n[dashboards.second]\nbackend = "llm"\npath = "{second_path.as_posix()}"\n'
+    text = (
+        CONFIG.replace('path = "./out/dashboard.png"', f'path = "{first_path.as_posix()}"')
+        + f'\n[dashboards.second]\nbackend = "llm"\npath = "{second_path.as_posix()}"\n'
+    )
     config_path = tmp_path / "config.toml"
     config_path.write_text(text)
 
@@ -246,8 +248,14 @@ def test_post_process_requires_single_dashboard(tmp_path) -> None:
     Image.new("RGB", (200, 150), (120, 120, 120)).save(input_path)
     result = runner.invoke(
         app,
-        ["--config", str(config_path), "dashboard", "post-process",
-         str(input_path), str(tmp_path / "out.png")],
+        [
+            "--config",
+            str(config_path),
+            "dashboard",
+            "post-process",
+            str(input_path),
+            str(tmp_path / "out.png"),
+        ],
     )
     assert result.exit_code != 0  # ambiguous without --name across multiple dashboards
 

@@ -160,6 +160,8 @@ def _resolve_face(family: str, weight: str) -> tuple[str, int]:
         raise LayoutError(f"could not resolve font {family!r} via fontconfig")
     got_family, _got_style, path, index = match
     if _norm(family) not in _norm(got_family):
-        raise LayoutError(f"font {family!r} is not installed (fc-match substituted "
-                          f"{got_family!r}); install it or set dashboard.font")
+        raise LayoutError(
+            f"font {family!r} is not installed (fc-match substituted "
+            f"{got_family!r}); install it or set dashboard.font"
+        )
     return path, index

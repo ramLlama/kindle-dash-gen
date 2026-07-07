@@ -41,12 +41,14 @@ def _fit(img: Image.Image, width: int, height: int, method: PostProcessMethod) -
     """Resize ``img`` to exactly ``(width, height)`` according to ``method``."""
     size = (width, height)
     if method == "resize":
-        return img.resize(size, Image.LANCZOS)  # stretch to fill, ignoring aspect
+        return img.resize(size, Image.Resampling.LANCZOS)  # stretch to fill, ignoring aspect
     if method == "crop":
-        return ImageOps.fit(img, size, Image.LANCZOS, centering=(0.5, 0.5))  # cover + center-crop
+        return ImageOps.fit(
+            img, size, Image.Resampling.LANCZOS, centering=(0.5, 0.5)
+        )  # cover + center-crop
     if method == "pad":
         # Fit within the frame; fill the leftover strip with white to match the e-ink background.
-        return ImageOps.pad(img, size, Image.LANCZOS, color=255, centering=(0.5, 0.5))
+        return ImageOps.pad(img, size, Image.Resampling.LANCZOS, color=255, centering=(0.5, 0.5))
     raise ValueError(f"unknown post-process method: {method!r}")
 
 

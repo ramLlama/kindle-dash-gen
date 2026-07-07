@@ -48,8 +48,9 @@ def register_layout(name: str, factory: type[Layout]) -> None:
     _LAYOUTS[name] = factory
 
 
-def render(data: DashboardData, *, units: str, width: int, height: int, layout: str,
-           font: str) -> bytes:
+def render(
+    data: DashboardData, *, units: str, width: int, height: int, layout: str, font: str
+) -> bytes:
     """Render ``data`` to a grayscale PNG (bytes) at ``width``×``height`` using ``layout``.
 
     Loads the bundled layout plugins on first use, then dispatches by name. The image is drawn at

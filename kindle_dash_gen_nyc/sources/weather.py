@@ -66,9 +66,7 @@ class NwsClient:
             stations_url = props["observationStations"]
             rel = props.get("relativeLocation", {}).get("properties", {})
             city, state = rel.get("city"), rel.get("state")
-            location_name = (
-                f"{city}, {state}" if city is not None and state is not None else city
-            )
+            location_name = f"{city}, {state}" if city is not None and state is not None else city
         except (KeyError, TypeError) as exc:
             raise WeatherError("unexpected NWS /points response") from exc
 
@@ -152,7 +150,7 @@ class NwsClient:
         """Parse the gridpoint apparent-temperature time series, or [] if unavailable."""
         try:
             values = self._get_json(grid_url)["properties"]["apparentTemperature"]["values"]
-        except (WeatherError, KeyError, TypeError):
+        except WeatherError, KeyError, TypeError:
             return []
         series: ApparentSeries = []
         for entry in values:
@@ -176,7 +174,7 @@ class NwsClient:
             if len(stations) == 0:
                 return None, None
             obs = self._get_json(f"{stations[0]['id']}/observations/latest")["properties"]
-        except (WeatherError, KeyError, IndexError, TypeError):
+        except WeatherError, KeyError, IndexError, TypeError:
             return None, None
         text = obs.get("textDescription")
         return _is_raining(obs.get("presentWeather") or [], text), text

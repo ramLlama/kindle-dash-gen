@@ -131,8 +131,14 @@ def test_unresolvable_font_raises() -> None:
     # fc-match always substitutes a best match; a bogus family must fail fast, not render in a
     # silently-substituted fallback font.
     with pytest.raises(LayoutError):
-        render(_dashboard(), units="us", width=W, height=H, layout="glanceable",
-               font="No Such Font Family 9000")
+        render(
+            _dashboard(),
+            units="us",
+            width=W,
+            height=H,
+            layout="glanceable",
+            font="No Such Font Family 9000",
+        )
 
 
 def test_resolve_face_differentiates_weights() -> None:

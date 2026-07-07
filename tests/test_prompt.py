@@ -120,8 +120,12 @@ def test_dense_prompt_caps_arrivals_per_direction() -> None:
         name="Busy St",
         arrivals_by_direction={
             Direction.NORTH: [
-                TrainArrival(route=str(i), direction=Direction.NORTH, destination=f"D{i}",
-                             arrival=NOW + timedelta(minutes=i))
+                TrainArrival(
+                    route=str(i),
+                    direction=Direction.NORTH,
+                    destination=f"D{i}",
+                    arrival=NOW + timedelta(minutes=i),
+                )
                 for i in range(1, 8)
             ]
         },
