@@ -113,7 +113,10 @@ class Dashboard(BaseModel):
     path: Path
     backend: RenderBackend = "pillow"
     layout: str = "glanceable"  # pillow backend: registered layout plugin (see docs/plugins.md)
-    font: str = "Adwaita Sans"  # pillow backend: system font family (resolved via fontconfig)
+    # pillow backend: system font family (resolved via fontconfig). None = unspecified, letting a
+    # layout choose its own default (glanceable falls back to toolkit.DEFAULT_FONT; home_mta_map
+    # uses Futura + Helvetica Neue). A set value overrides the layout's default for every glyph.
+    font: str | None = None
     width: int = 1072  # Kindle Voyage, portrait (native orientation)
     height: int = 1448
     gray_levels: int = 16

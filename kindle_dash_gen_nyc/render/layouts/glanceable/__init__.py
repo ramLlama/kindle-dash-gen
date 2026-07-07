@@ -15,6 +15,7 @@ from PIL import Image, ImageDraw
 from kindle_dash_gen_nyc.models import DashboardData, Direction, TrainArrival, WeatherReport
 from kindle_dash_gen_nyc.render.layout import register_layout
 from kindle_dash_gen_nyc.render.toolkit import (
+    DEFAULT_FONT,
     INK,
     PAPER,
     Fonts,
@@ -42,10 +43,11 @@ class _Glanceable:
     Everything is measured against ``width``/``height`` so the layout adapts to the panel size.
     """
 
-    def __init__(self, width: int, height: int, fonts: Fonts, units: str) -> None:
+    def __init__(self, width: int, height: int, font: str | None, units: str) -> None:
         self.w = width
         self.h = height
-        self.fonts = fonts
+        # No layout-specific font opinion: fall back to the app-wide default when unspecified.
+        self.fonts = Fonts(font if font is not None else DEFAULT_FONT)
         self.units = units
         self.img = Image.new("L", (width, height), PAPER)
         self.d = ImageDraw.Draw(self.img)

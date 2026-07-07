@@ -29,13 +29,15 @@ A plugin is a **subpackage** of a plugin directory that, on import, calls `regis
 ```python
 # <plugins_dir>/my_layout/__init__.py
 from kindle_dash_gen_nyc.render.layout import register_layout
-from kindle_dash_gen_nyc.render.toolkit import INK, PAPER, Fonts, fit_font, load_asset_image
+from kindle_dash_gen_nyc.render.toolkit import DEFAULT_FONT, INK, PAPER, Fonts, fit_font, load_asset_image
 from PIL import Image, ImageDraw
 
 
 class MyLayout:
-    # Constructed with the panel size, a font resolver, and the display units.
-    def __init__(self, width: int, height: int, fonts: Fonts, units: str) -> None:
+    # Constructed with the panel size, the configured font family (or None), and display units.
+    def __init__(self, width: int, height: int, font: str | None, units: str) -> None:
+        # font is None when the dashboard didn't set one — pick your own default for that case.
+        self.fonts = Fonts(font if font is not None else DEFAULT_FONT)
         self.img = Image.new("L", (width, height), PAPER)
         self.d = ImageDraw.Draw(self.img)
 
@@ -60,7 +62,11 @@ layout  = "my_layout"
 
 A layout class satisfies `kindle_dash_gen_nyc.render.layout.Layout`:
 
-- `__init__(self, width: int, height: int, fonts: Fonts, units: str)`
+- `__init__(self, width: int, height: int, font: str | None, units: str)` — `font` is the
+  dashboard's configured font family, or `None` when unspecified. Resolve it into `Fonts` yourself,
+  supplying your own default for the `None` case (e.g. `Fonts(font or DEFAULT_FONT)`, or per-role
+  defaults like the bundled `home_mta_map`, which uses Futura for line letters and Helvetica Neue
+  for everything else).
 - `render(self, data: DashboardData) -> PIL.Image.Image` — an `"L"`-mode (8-bit grayscale) image
   of exactly `width` × `height`. It is post-processed (quantized to the device gray levels) by the
   pipeline; a pillow layout is already the exact size, so the fit step is a no-op.
@@ -76,6 +82,8 @@ The public surface for building layouts — everything the bundled `glanceable` 
 - `Fonts` — resolves a system font family via fontconfig. `fonts.get(size, weight)` returns a
   Pillow font; weights: `Regular`, `Medium`, `SemiBold`, `Bold`, `Black`. A missing family fails
   fast with `LayoutError` rather than silently substituting.
+- `DEFAULT_FONT` — the app-wide fallback font family, for the common case of resolving an
+  unspecified (`None`) `font` to a single default: `Fonts(font or DEFAULT_FONT)`.
 - `INK = 0`, `PAPER = 255` — the grayscale ink/paper values.
 - `fit_font(fonts, text, weight, max_size, max_width)` — the largest face at which `text` fits
   `max_width`, stepping down from `max_size`.

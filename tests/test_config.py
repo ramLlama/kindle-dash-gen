@@ -112,6 +112,13 @@ def test_at_least_one_dashboard_required(tmp_path: Path) -> None:
         load_config(_write(tmp_path, text))
 
 
+def test_font_defaults_none_when_unset(tmp_path: Path) -> None:
+    # An omitted font is None (unspecified) so a layout picks its own default; a set value parses.
+    assert load_config(_write(tmp_path, EXAMPLE)).dashboards["main"].font is None
+    text = EXAMPLE.replace("[dashboards.main]\n", '[dashboards.main]\nfont = "Futura"\n')
+    assert load_config(_write(tmp_path, text)).dashboards["main"].font == "Futura"
+
+
 def test_plugins_path_defaults_none_and_parses_absolute(tmp_path: Path) -> None:
     assert load_config(_write(tmp_path, EXAMPLE)).plugins_path is None
     text = 'plugins_path = "/opt/kindle/plugins"\n' + EXAMPLE

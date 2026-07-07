@@ -81,7 +81,10 @@ path = "./out/dashboard.png"
 #   "llm"    -- an OpenRouter image model renders from a prompt (requires [openrouter])
 backend = "pillow"
 layout = "glanceable"      # pillow backend: bundled layout name (see render/layout.py)
-font = "Adwaita Sans"      # pillow backend: system font family, resolved via fontconfig
+# font: pillow backend system font family (fontconfig). Omit to let the layout choose its own
+# default (glanceable uses "Adwaita Sans"; home_mta_map uses Futura + Helvetica Neue). A set value
+# overrides the layout's default for every glyph.
+font = "Adwaita Sans"
 width = 1072               # Kindle Voyage, portrait (native orientation)
 height = 1448
 gray_levels = 16           # Voyage 4-bit grayscale

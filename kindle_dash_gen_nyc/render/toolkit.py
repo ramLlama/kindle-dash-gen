@@ -27,6 +27,7 @@ from ..format import (
 )
 
 __all__ = [
+    "DEFAULT_FONT",
     "INK",
     "PAPER",
     "Fonts",
@@ -42,6 +43,11 @@ __all__ = [
 ]
 
 INK, PAPER = 0, 255  # black ink, white paper (8-bit grayscale)
+
+# The app-wide fallback font family, used when a dashboard leaves `font` unspecified and the layout
+# has no font opinion of its own. A layout distinguishes "unspecified" (its constructor's `font` is
+# None) from an explicit family, so it can pick a different default; `glanceable` falls back here.
+DEFAULT_FONT = "Adwaita Sans"
 
 # Our weight names -> candidate fontconfig style names (tried first, in order), then a fontconfig
 # weight token (fallback). Style matching is robust to fonts whose OS/2 weight metadata is unusable

@@ -122,6 +122,13 @@ def test_renders_without_boards() -> None:
     assert img.size == (W, H)
 
 
+def test_font_none_falls_back_to_default() -> None:
+    # An unspecified font (None) resolves to the layout's default (glanceable's DEFAULT_FONT), so
+    # the render still succeeds at full size rather than failing to resolve a font.
+    png = render(_dashboard(), units="both", width=W, height=H, layout="glanceable", font=None)
+    assert Image.open(BytesIO(png)).size == (W, H)
+
+
 def test_unknown_layout_raises() -> None:
     with pytest.raises(LayoutError):
         render(_dashboard(), units="us", width=W, height=H, layout="nope", font="Adwaita Sans")
