@@ -42,14 +42,18 @@ kindle_dash_gen_nyc/
   render/              # turn data into a Kindle-ready PNG (two backends)
     prompt.py          # llm backend: render_prompt() Jinja2, public template context contract
     openrouter.py      # llm backend: OpenRouterClient, Unified Image API, capability discovery
-    layout.py          # pillow backend: named layouts draw DashboardData directly (fontconfig)
+    layout.py          # pillow backend: Layout protocol, register_layout, render() dispatch
+    toolkit.py         # pillow backend: public plugin API (Fonts, INK/PAPER, fit_font, assets)
+    layouts/           # bundled layout plugins (discovered, not special-cased)
+      glanceable/      # the default layout as a self-contained plugin (owns its assets/icons/)
     postprocess.py     # post_process(): grayscale, fit, quantize (Pillow) — shared by both
+  plugins.py           # render-plugin discovery: bundled root + optional local plugins_path
   assets/
     dashboard_prompts/*.j2       # bundled prompt templates ("dense", "glanceable") — llm backend
-    icons/{sunny,cloudy,rain,snow}.png  # weather icons for the pillow backend
     mta/stations.csv             # bundled station lookup (for `mta list-stations`)
 tests/                 # pytest, one file per module; HTTP mocked with niquests-mock
 config.example.toml    # copy to config.toml (gitignored) and edit
+docs/plugins.md        # how to write a render layout plugin (the public contract)
 ```
 
 ## Key Concepts & Domain Model
@@ -112,10 +116,16 @@ subcommand loads it on demand via `_config(ctx)`.
   `[dashboards.<name>]` tables). `gather()` runs once and every dashboard renders from that shared
   data to its own `path`. `[openrouter]` is required only if *some* dashboard uses the llm backend.
 - **Two render backends.** Each dashboard's `backend` selects `"pillow"` (default: deterministic
-  local layout in `render/layout.py`; free, offline, exact — never garbles data) or `"llm"`
-  (OpenRouter image model). `[openrouter]` is optional and only required for the llm backend (a
-  `Config` validator enforces this). The pillow backend resolves its `font` family via fontconfig
-  (`fc-match`) and pastes bundled `assets/icons/*.png`; a missing font/icon raises `LayoutError`.
+  local layout; free, offline, exact — never garbles data) or `"llm"` (OpenRouter image model).
+  `[openrouter]` is optional and only required for the llm backend (a `Config` validator enforces
+  this). The pillow backend resolves its `font` family via fontconfig (`fc-match`); a missing
+  font/asset raises `LayoutError`.
+- **Layouts are plugins (no special builtins).** The layout registry starts empty; every layout
+  registers via `register_layout` at import, discovered by `plugins.load_plugins()` from the
+  bundled `render/layouts/` root plus an optional local `plugins_path` dir. Build on the public
+  `render/toolkit.py` API (`Fonts`, `INK`/`PAPER`, `fit_font`, `load_asset_image`, `LayoutError`);
+  the bundled `glanceable` uses only that surface, so it's recreatable 1:1 as a private plugin.
+  See `docs/plugins.md`. Do **not** re-add a hardcoded builtin layout dict.
 - **Per-source isolation.** In `gather()`, a `WeatherError` drops the weather panel and an
   `MtaError` drops the arrival boards; the render proceeds with whatever remains. Only these
   typed errors are swallowed. If *both* sources are empty, `run_once()` skips the render

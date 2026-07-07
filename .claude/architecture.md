@@ -86,16 +86,32 @@ All parsing failures raise `WeatherError`. Values stay SI at full precision.
 Two backends produce raw PNG bytes from `DashboardData`, selected per dashboard by its `backend`
 (`"pillow"` default, `"llm"` opt-in). `post_process()` is shared by both.
 
-### Layout — pillow backend (render/layout.py)
+### Layout — pillow backend (render/layout.py + plugins)
 
-`render(data, *, units, width, height, layout, font)` draws the dashboard deterministically with
-Pillow at the exact panel size and returns PNG bytes. `_LAYOUTS` maps a name (`"glanceable"`) to a
-renderer class. Fonts are resolved from a system family name via fontconfig (`fc-match` → file +
-face index, so variable-font weights load), and verified against the requested family so a missing
-font fails fast rather than silently substituting. Weather icons are bundled `assets/icons/*.png`,
-pasted with their alpha as a mask; the icon is chosen by `format.weather_icon()`. Unknown layout,
-unresolvable font, or missing icon raise `LayoutError`. This backend is free, offline, exact, and
-never garbles the data (unlike an image model).
+`render(data, *, units, width, height, layout, font)` (in `render/layout.py`) draws the dashboard
+deterministically with Pillow at the exact panel size and returns PNG bytes. It first calls
+`plugins.load_plugins()` to populate `_LAYOUTS` (a name → renderer-class registry), then dispatches
+by `layout` name. Unknown layout / unresolvable font / missing asset raise `LayoutError`. Free,
+offline, exact, never garbles the data.
+
+**Layouts are plugins — nothing is special-cased.** `_LAYOUTS` starts empty; every layout
+(including bundled `glanceable`) registers itself via `register_layout(name, cls)` at import time,
+and discovery imports them. A layout class implements the `Layout` protocol: `__init__(width,
+height, fonts: Fonts, units)` + `render(data) -> Image`.
+
+- **Toolkit (`render/toolkit.py`)** is the public surface a plugin builds on: `Fonts` (fontconfig
+  `fc-match` resolution → file + face index, verified against the requested family so a missing
+  font fails fast), `INK`/`PAPER`, `fit_font` (shrink-to-fit), `load_asset_image(package, rel_path)`,
+  and `LayoutError`. `glanceable` uses only this — so any private plugin (or a 1:1 recreation of
+  `glanceable`) can be built without core internals.
+- **Discovery (`plugins.py`)** scans two roots by identical logic: the bundled
+  `kindle_dash_gen_nyc.render.layouts` package (always), and an optional local directory named by
+  `Config.plugins_path` (imported by directory name after putting its parent on `sys.path`).
+  `load_plugins(local_dir=None)` is idempotent; a missing package is a silent no-op. `pipeline`
+  passes `cfg.plugins_path`; `layout.render()` loads the bundled root on its own for direct callers.
+- **Bundled `glanceable`** lives at `render/layouts/glanceable/` — a self-contained plugin
+  subpackage owning its `assets/icons/*.png` (chosen by `format.weather_icon()`, pasted with alpha).
+  See `docs/plugins.md` for the full contract.
 
 ### Prompt — llm backend (render/prompt.py)
 

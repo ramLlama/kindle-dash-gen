@@ -19,3 +19,6 @@ dist/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+
+# local (private) render plugins — pointed at by config `plugins_path`
+kindle_dash_gen_nyc_plugins/

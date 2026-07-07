@@ -114,6 +114,18 @@ def test_at_least_one_dashboard_required(tmp_path: Path) -> None:
         load_config(_write(tmp_path, text))
 
 
+def test_plugins_path_defaults_none_and_parses_absolute(tmp_path: Path) -> None:
+    assert load_config(_write(tmp_path, EXAMPLE)).plugins_path is None
+    text = 'plugins_path = "/opt/kindle/plugins"\n' + EXAMPLE
+    assert load_config(_write(tmp_path, text)).plugins_path == Path("/opt/kindle/plugins")
+
+
+def test_relative_plugins_path_rejected(tmp_path: Path) -> None:
+    text = 'plugins_path = "./local_plugins"\n' + EXAMPLE
+    with pytest.raises(ValidationError):
+        load_config(_write(tmp_path, text))
+
+
 def test_unknown_key_is_rejected(tmp_path: Path) -> None:
     text = EXAMPLE.replace("[weather]\n", "[weather]\nbogus = 1\n")
     with pytest.raises(ValidationError):

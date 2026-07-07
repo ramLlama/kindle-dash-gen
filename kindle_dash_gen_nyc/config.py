@@ -112,7 +112,7 @@ class Dashboard(BaseModel):
 
     path: Path
     backend: RenderBackend = "pillow"
-    layout: str = "glanceable"  # pillow backend: named layout in render/layout.py
+    layout: str = "glanceable"  # pillow backend: registered layout plugin (see docs/plugins.md)
     font: str = "Adwaita Sans"  # pillow backend: system font family (resolved via fontconfig)
     width: int = 1072  # Kindle Voyage, portrait (native orientation)
     height: int = 1448
@@ -136,6 +136,7 @@ class Config(BaseModel):
     stations: dict[str, Station]  # display name -> station board
     openrouter: OpenRouter | None = None  # required only when a dashboard's backend == "llm"
     dashboards: dict[str, Dashboard]  # name -> output; one shared data fetch renders each
+    plugins_path: Path | None = None  # absolute dir of private render plugins (see docs/plugins.md)
     schedule: Schedule = Schedule()
 
     @model_validator(mode="after")
@@ -144,6 +145,9 @@ class Config(BaseModel):
             raise ValueError("at least one [dashboards.<name>] section is required")
         if self.openrouter is None and any(d.backend == "llm" for d in self.dashboards.values()):
             raise ValueError("a dashboard with backend = 'llm' requires an [openrouter] section")
+        # Absolute so plugin discovery is unambiguous regardless of the process's working directory.
+        if self.plugins_path is not None and not self.plugins_path.is_absolute():
+            raise ValueError(f"plugins_path must be an absolute path, got {self.plugins_path}")
         return self
 
 

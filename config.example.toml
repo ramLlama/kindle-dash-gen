@@ -1,6 +1,10 @@
 # Example configuration for kindle-dash-gen-nyc.
 # Copy to config.toml and edit. config.toml is gitignored (it may hold secrets).
 
+# Optional: an absolute package directory of your own private render layouts (see docs/plugins.md).
+# Each subpackage registers a layout you can then select with `layout = "..."` on a dashboard below.
+# plugins_path = "/home/you/kindle-dash-gen-nyc/kindle_dash_gen_nyc_plugins"
+
 [location]                 # used by the NWS weather API
 latitude = 40.7484
 longitude = -73.9857

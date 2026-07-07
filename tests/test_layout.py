@@ -22,7 +22,8 @@ from kindle_dash_gen_nyc.models import (
     TrainArrival,
     WeatherReport,
 )
-from kindle_dash_gen_nyc.render.layout import LayoutError, _resolve_face, render
+from kindle_dash_gen_nyc.render.layout import LayoutError, render
+from kindle_dash_gen_nyc.render.toolkit import _resolve_face
 
 NOW = datetime(2026, 7, 2, 20, 30, 0)
 W, H = 1072, 1448

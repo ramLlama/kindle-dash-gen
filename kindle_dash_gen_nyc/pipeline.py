@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from . import plugins
 from .config import Config, Dashboard
 from .models import DashboardData, StationBoard
 from .render import layout
@@ -111,6 +112,8 @@ def render(cfg: Config, data: DashboardData, dash: Dashboard) -> bytes:
 
 def render_raw(cfg: Config, data: DashboardData, dash: Dashboard) -> bytes:
     """Render raw PNG bytes via ``dash``'s backend, before Kindle post-processing."""
+    # Register bundled + any configured local layout plugins before a pillow layout is looked up.
+    plugins.load_plugins(cfg.plugins_path)
     if dash.backend == "pillow":
         return _render_pillow(cfg, data, dash)
     return _render_llm(cfg, data, dash)
