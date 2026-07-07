@@ -10,7 +10,7 @@ as a standalone debug command.
 run() loop  ──every interval_minutes──▶  run_once(cfg)
                                              │
                                     gather(cfg) ──▶ DashboardData
-                                             │        (weather?, boards, generated_at)
+                                             │        (generated_at, source_data{type: value})
                        all sources empty? ──▶ skip render, return RunResult([], [])
                                              │
                             for each [dashboards.<name>] (shared data):
@@ -27,11 +27,14 @@ run() loop  ──every interval_minutes──▶  run_once(cfg)
 draws locally; the **llm** backend (`_render_llm`) resolves the aspect ratio, renders the Jinja2
 prompt, and calls the image model. Both return raw PNG bytes and share `post_process()`.
 
-- **`gather()`** constructs `NwsClient` and `MtaClient`, fetches from each inside its own
-  try/except, and logs a degradation on `WeatherError` / `MtaError`. Returns `DashboardData`
-  with `weather=None` and/or `boards=[]` on partial failure.
+- **`gather()`** iterates the discovered source plugins (`build_sources(cfg.sources)` resolves each
+  `[sources.<name>]` to its plugin class + validated config), constructs and `fetch`es each inside
+  its own try/except, and logs a degradation on `SourceError`. It keys each non-`None` result by
+  `type(result)` into `DashboardData.source_data`; a failed or empty source is simply absent. Two
+  sources producing the same data type is a misconfiguration and raises (fail loud, not degrade).
 - **`run_once()`** gathers once, then renders every `[dashboards.<name>]` from that shared data,
-  each to its own `path`. It short-circuits when both sources are empty: writing a blank dashboard
+  each to its own `path`. It short-circuits when every source is empty (`len(source_data) == 0`):
+  writing a blank dashboard
   would clobber the last good images and waste paid generations, so it returns an empty `RunResult`
   instead. A single dashboard's render/write failure is isolated (logged, others proceed) and its
   name collected in `RunResult.failed`, which the `run --one-shot` CLI turns into a non-zero exit.
@@ -42,9 +45,18 @@ prompt, and calls the image model. Both return raw PNG bytes and share `post_pro
 
 ## Sources
 
-### NWS weather (sources/weather.py)
+Sources are **discovered plugins** (the source-side mirror of the render layouts). Each lives under
+`sources/builtins/<name>/` (or a local `plugins_path` dir), registers a `Source` protocol class via
+`register_source(name, factory)` at import, and declares a pydantic `Config` class attribute for its
+`[sources.<name>]` table. `sources/registry.py` holds the empty registry, the `Source` protocol, and
+`build_sources()`; `sources/toolkit.py` exposes `SourceError`, the base every source error
+subclasses. `gather()` (above) drives them. See `docs/sources.md` for the contract. Below is what
+each bundled source does internally.
 
-The NWS API is multi-step. `NwsClient.fetch(lat, lon)`:
+### NWS weather (sources/builtins/nws/)
+
+The `nws` source (`_NwsSource` + `NwsConfig`) wraps `NwsClient`; `WeatherError` subclasses
+`SourceError`. The NWS API is multi-step. `NwsClient.fetch(lat, lon)`:
 
 1. `GET /points/{lat},{lon}` (coords rounded to 4 dp — NWS rejects more) → returns per-location
    URLs: `forecast`, `forecastHourly`, `forecastGridData`, `observationStations`, plus a
@@ -64,9 +76,11 @@ each period's window.
 
 All parsing failures raise `WeatherError`. Values stay SI at full precision.
 
-### MTA subway (sources/mta.py)
+### MTA subway (sources/builtins/mta/)
 
-`MtaClient(stations).fetch()` builds one `StationBoard` per configured station name.
+The `mta` source (`_MtaSource` + `MtaConfig`) owns its config models — `Platform` and `Station` live
+here, not in central config — and wraps its boards in an `MtaBoards` value; `MtaError` subclasses
+`SourceError`. `MtaClient(stations).fetch()` builds one `StationBoard` per configured station name.
 
 - Each MTA GTFS-realtime feed covers a group of lines (e.g. one feed for N/Q/R/W). Feed URLs
   come from `nyct_gtfs.NYCTFeed._train_to_url` (`_LINE_TO_URL`). The client collects the
@@ -105,12 +119,14 @@ height, fonts: Fonts, units)` + `render(data) -> Image`.
   font fails fast), `INK`/`PAPER`, `fit_font` (shrink-to-fit), `load_asset_image(package, rel_path)`,
   and `LayoutError`. `glanceable` uses only this — so any private plugin (or a 1:1 recreation of
   `glanceable`) can be built without core internals.
-- **Discovery (`plugins.py`)** scans two roots by identical logic: the bundled
-  `kindle_dash_gen.render.layouts` package (always), and an optional local directory named by
-  `Config.plugins_path` (imported by directory name after putting its parent on `sys.path`).
-  `load_plugins(local_dir=None)` is idempotent; a missing package is a silent no-op. `pipeline`
-  passes `cfg.plugins_path`; `layout.render()` loads the bundled root on its own for direct callers.
-- **Bundled `glanceable`** lives at `render/layouts/glanceable/` — a self-contained plugin
+- **Discovery (`plugins.py`)** serves both plugin kinds by identical logic. It imports two bundled
+  roots (always) — `kindle_dash_gen.render.builtins` for layouts and `kindle_dash_gen.sources.builtins`
+  for sources, each behind its own idempotency flag — plus an optional local directory named by
+  `Config.plugins_path` (imported by directory name after putting its parent on `sys.path`), which
+  may hold either kind. `load_plugins(local_dir=None)` is idempotent; a missing bundled package is a
+  silent no-op, but a present-but-broken plugin propagates. `pipeline` passes `cfg.plugins_path`;
+  `layout.render()` and `build_sources()` load the bundled roots on their own for direct callers.
+- **Bundled `glanceable`** lives at `render/builtins/glanceable/` — a self-contained plugin
   subpackage owning its `assets/icons/*.png` (chosen by `format.weather_icon()`, pasted with alpha).
   See `docs/plugins.md` for the full contract.
 
@@ -119,7 +135,10 @@ height, fonts: Fonts, units)` + `render(data) -> Image`.
 `render_prompt(data, *, units, width, height, aspect, template)` resolves the template (a
 bundled name under `assets/dashboard_prompts/*.j2`, else a filesystem path) and renders it.
 
-**Public template context contract** (custom user templates depend on this — treat as an API):
+**Public template context contract** (custom user templates depend on this — treat as an API).
+`_build_context` adapts the source-keyed `data.source_data` back into these flat variables
+(`weather` = `source_data.get(WeatherReport)`, `boards` = the `MtaBoards.boards` if present else
+`[]`), so the move to source plugins leaves the contract — and any custom template — unchanged:
 
 - Variables: `weather` (`WeatherReport | None`), `boards` (`list[StationBoard]`), `units`
   (`"us"|"si"|"both"`), `width`, `height`, `aspect` (e.g. `"4:3"`), `now` (= `generated_at`).
@@ -167,10 +186,18 @@ Returns PNG bytes. Defaults target the Kindle Voyage: 1072×1448 portrait, 16 gr
 
 - `Secret` — exactly one of `value` / `value_from_cmd` (enforced by a model validator);
   `resolve()` returns the literal or runs the shell command and returns stripped stdout.
-- `stations: dict[str, Station]` — display name → board; each `Station` has `platforms`; each
-  `Platform` has `lines`, `stop_id`, `direction`.
-- `Dashboard` — output `path`, pixel `width`/`height`, `gray_levels`, `post_process_method`,
-  and optional `aspect_ratio` / `resolution` overrides.
+- `sources: dict[str, dict[str, Any]]` — the raw `[sources.<name>]` tables. `Config` does **not**
+  validate their contents; after plugin discovery, `build_sources()` validates each slice against
+  its plugin's own `Config` model (the `nws` plugin's `NwsConfig`: `latitude`, `longitude`,
+  `user_agent`, `rollover_hour`, `hourly_hours`; the `mta` plugin's `MtaConfig`: `stations`, whose
+  `Station`/`Platform` models also live in that plugin). An unknown source name or key fails fast
+  there. Zero sources is valid. The old top-level `[location]`, `[weather]`, `[stations.*]` sections
+  are gone.
+- `Dashboard` — output `path`, `backend` (`pillow`/`llm`), `weather_temp_units` (`us`/`si`/`both`,
+  the display-units choice both backends use), pillow `layout` / `font`, pixel `width`/`height`,
+  `gray_levels`, `post_process_method`, `rotate`, and optional `aspect_ratio` / `resolution`
+  overrides.
+- `plugins_path` — optional absolute dir of private layout and/or source plugins.
 - `Schedule.interval_minutes` (default 5).
 
 ## Design Decisions

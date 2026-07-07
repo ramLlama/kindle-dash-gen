@@ -6,6 +6,9 @@ same way. There is no privileged builtin. You can add your own layout locally (e
 design) without touching the app, and a private plugin has access to the exact same API the bundled
 one uses, so `glanceable` could be recreated 1:1 as a private plugin.
 
+> Data **sources** (weather, subway, …) use the same plugin machinery on the input side. See
+> [sources.md](sources.md). One `plugins_path` directory can hold both layout and source plugins.
+
 ## The two plugin directories
 
 Both are discovered by identical logic (`kindle_dash_gen/plugins.py`):
@@ -71,9 +74,17 @@ A layout class satisfies `kindle_dash_gen.render.layout.Layout`:
   of exactly `width` × `height`. It is post-processed (quantized to the device gray levels) by the
   pipeline; a pillow layout is already the exact size, so the fit step is a no-op.
 
-`DashboardData` (`kindle_dash_gen.models`) carries `weather: WeatherReport | None`, `boards:
-list[StationBoard]`, and `generated_at: datetime`. Both `weather` and `boards` can be absent
-(sources degrade independently), so guard them.
+`DashboardData` (`kindle_dash_gen.models`) carries `generated_at: datetime` and `source_data:
+dict[type, Any]`, which maps each source's produced data class to its instance. Look up what you
+need defensively — a source that failed or had no data is simply absent:
+
+```python
+from kindle_dash_gen.models import MtaBoards, WeatherReport
+
+weather = data.source_data.get(WeatherReport)          # WeatherReport | None
+mta = data.source_data.get(MtaBoards)
+boards = mta.boards if mta is not None else []          # list[StationBoard]
+```
 
 ## The toolkit (`kindle_dash_gen.render.toolkit`)
 

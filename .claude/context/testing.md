@@ -22,13 +22,19 @@ Run with `uv run pytest` (config in `pyproject.toml`: `testpaths = ["tests"]`,
 
 ## What each test file covers
 
-- `test_pipeline.py` — source isolation (weather-down / subway-down still renders), the
-  skip-render-when-all-sources-empty short-circuit (must not overwrite the last image or spend a
+- `test_pipeline.py` — source isolation (a `SourceError` from one source still renders the rest),
+  the skip-render-when-all-sources-empty short-circuit (must not overwrite the last image or spend a
   generation), one-shot writes a grayscale image at the configured size, and the run loop
   (loops until `KeyboardInterrupt`, survives an iteration failure and retries).
-- `test_weather.py` — NWS multi-step fetch parsing, high/low rollover, apparent-temp series,
-  observation/raining derivation.
-- `test_mta.py` — feed dedup/reuse, platform merging, per-direction cap and sort, error paths.
+- `test_plugins.py` — layout + source registry APIs, discovery of the bundled plugins, and loading
+  a local `plugins_path` directory (the mechanism serving both layouts and sources).
+- `test_sources.py` — `build_sources`: per-plugin `Config` validation of each `[sources.<name>]`
+  slice, and fail-fast on an unknown source name or an invalid slice.
+- `test_layout.py` — the pillow layout backend: dispatch, `Fonts` resolution, and `LayoutError`.
+- `test_weather.py` — NWS (`nws` source) multi-step fetch parsing, high/low rollover, apparent-temp
+  series, observation/raining derivation.
+- `test_mta.py` — MTA (`mta` source) feed dedup/reuse, platform merging, per-direction sort, error
+  paths.
 - `test_openrouter.py` — capability merging across endpoints, nearest aspect ratio, override
   validation, base64 decode, error handling. Uses `niquests_mock`.
 - `test_postprocess.py` — grayscale/fit/quantize, each `method`, gray-level LUT.

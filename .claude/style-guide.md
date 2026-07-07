@@ -17,8 +17,10 @@ live in `pyproject.toml` (`[tool.ruff]`).
 - Modules and functions: `snake_case`. Classes: `PascalCase`. Constants: `UPPER_SNAKE`.
 - **Module-private helpers are prefixed with `_`** (e.g. `_atomic_write`, `_high_low`,
   `_quantize_lut`, `_merge_supported_parameters`). Public API is the un-prefixed surface.
-- Domain error classes are named `<Source>Error` and subclass `RuntimeError`
-  (`WeatherError`, `MtaError`, `OpenRouterError`).
+- Domain error classes are named `<Thing>Error`. Source-fetch errors subclass the shared
+  `SourceError` (in `sources/toolkit.py`) so the pipeline can isolate any source generically —
+  `WeatherError`, `MtaError`. Other error types subclass `RuntimeError` directly (`LayoutError`,
+  `OpenRouterError`, `SourceError` itself).
 - Module-level constants for external vocab / literals: `NWS_API`, `API`, `_LINE_TO_URL`,
   `_RAIN_KEYWORDS`, `_DIRECTION_SUFFIXES`.
 
