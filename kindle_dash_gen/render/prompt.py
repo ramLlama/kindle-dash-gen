@@ -35,7 +35,7 @@ from ..format import (
     format_wind,
     weather_icon,
 )
-from ..models import DashboardData
+from ..models import DashboardData, MtaBoards, WeatherReport
 
 _TEMPLATE_DIR = "assets/dashboard_prompts"
 _TEMPLATE_SUFFIX = ".j2"
@@ -73,10 +73,16 @@ def render_prompt(
 def _build_context(
     data: DashboardData, *, units: str, width: int, height: int, aspect: str
 ) -> dict:
-    """Build the public template context (see the module docstring for the contract)."""
+    """Build the public template context (see the module docstring for the contract).
+
+    Translates the source-keyed ``data.source_data`` back into the flat ``weather``/``boards``
+    template variables, so the contract (and any custom template) is unchanged by how data is
+    gathered. A missing source yields ``None``/``[]``.
+    """
+    mta = data.source_data.get(MtaBoards)
     return {
-        "weather": data.weather,
-        "boards": data.boards,
+        "weather": data.source_data.get(WeatherReport),
+        "boards": mta.boards if mta is not None else [],
         "units": units,
         "width": width,
         "height": height,

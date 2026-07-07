@@ -5,7 +5,7 @@ from __future__ import annotations
 import subprocess
 import tomllib
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
@@ -48,49 +48,6 @@ class Secret(BaseModel):
         return result.stdout.strip()
 
 
-class Location(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    latitude: float
-    longitude: float
-
-
-class Weather(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    user_agent: str
-    units: Literal["us", "si", "both"] = "us"  # display units; data is always SI internally
-    rollover_hour: int = 20  # after this local hour, high/low show the next day
-    hourly_hours: int = 4  # number of upcoming hourly forecasts to include
-
-
-class Platform(BaseModel):
-    """One physical platform: a GTFS stop id plus the lines that serve it."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    lines: list[str]
-    stop_id: str
-    direction: Literal["north", "south", "both"] = "both"
-
-
-class Station(BaseModel):
-    """A display board: one or more platforms merged into per-direction arrival lists.
-
-    Several platforms under one station are merged (e.g. the N/Q/R/W and the L platforms of
-    "Union Sq"). Boards carry every upcoming arrival, sorted; how many to show is a render-time
-    decision made by the layout (see docs/plugins.md), not a data-collection cap.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    platforms: list[Platform]
-    # Label a layout shows instead of the station's name (the config key). The key stays the
-    # canonical name that plugins match on (e.g. home_mta_map), so renaming the display never
-    # breaks that match. Unset means show the name as-is.
-    display_name: str | None = None
-
-
 class OpenRouter(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -116,6 +73,10 @@ class Dashboard(BaseModel):
 
     path: Path
     backend: RenderBackend = "pillow"
+    # Display units for weather temperatures (data is always SI internally; rounded/converted at
+    # render). A whole-dashboard presentation choice used by both backends, so it lives here rather
+    # than on the weather source.
+    weather_temp_units: Literal["us", "si", "both"] = "us"
     layout: str = "glanceable"  # pillow backend: registered layout plugin (see docs/plugins.md)
     # pillow backend: system font family (resolved via fontconfig). None = unspecified, letting a
     # layout choose its own default (glanceable falls back to toolkit.DEFAULT_FONT; home_mta_map
@@ -140,9 +101,10 @@ class Schedule(BaseModel):
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    location: Location
-    weather: Weather
-    stations: dict[str, Station]  # display name -> station board
+    # Raw [sources.<name>] tables, validated per-plugin (not here) after plugin discovery so each
+    # source owns its own schema. See kindle_dash_gen.sources.registry.build_sources. Zero sources
+    # is valid: every render then legitimately skips (keeps the last image).
+    sources: dict[str, dict[str, Any]] = {}
     openrouter: OpenRouter | None = None  # required only when a dashboard's backend == "llm"
     dashboards: dict[str, Dashboard]  # name -> output; one shared data fetch renders each
     plugins_path: Path | None = None  # absolute dir of private render plugins (see docs/plugins.md)

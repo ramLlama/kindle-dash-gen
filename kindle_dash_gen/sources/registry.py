@@ -31,15 +31,17 @@ class Source(Protocol[ConfigT_co]):
     validates the raw TOML slice against it (each source keeps ``extra="forbid"``, so its own
     unknown keys are rejected). The source is constructed from that validated config, then
     :meth:`fetch` returns its data object — whatever class the source produces, which becomes its
-    key in ``DashboardData.source_data`` — or ``None`` when there is simply no data this run. A
-    fetch *failure* raises a :class:`SourceError` (or subclass), which the pipeline isolates.
+    key in ``DashboardData.source_data`` — or ``None`` when there is simply no data this run (the
+    return is typed ``Any`` since the class varies per source; ``None`` is a valid value the
+    pipeline treats as "absent"). A fetch *failure* raises a :class:`SourceError` (or subclass),
+    which the pipeline isolates.
     """
 
     Config: ClassVar[type[BaseModel]]
 
     def __init__(self, config: ConfigT_co) -> None: ...
 
-    def fetch(self, now: datetime) -> Any | None: ...
+    def fetch(self, now: datetime) -> Any: ...
 
 
 # Populated only by plugin discovery (see :mod:`kindle_dash_gen.plugins`) — no builtins here.

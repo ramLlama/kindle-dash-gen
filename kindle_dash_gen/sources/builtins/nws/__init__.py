@@ -1,9 +1,10 @@
-"""Fetch current conditions and forecast from the National Weather Service API.
+"""The bundled ``nws`` source: current conditions and forecast from the National Weather Service.
 
-NWS is a multi-step API: a ``/points/{lat},{lon}`` lookup returns per-location URLs, then
-those URLs return the hourly/daily forecast, gridpoint data (for apparent temperature), and
-the list of nearby observation stations. All data here is kept in SI units at full
-precision; callers round for display.
+A source plugin like any other (registers via :func:`register_source` at import), analogous to the
+bundled ``glanceable`` layout. NWS is a multi-step API: a ``/points/{lat},{lon}`` lookup returns
+per-location URLs, then those URLs return the hourly/daily forecast, gridpoint data (for apparent
+temperature), and the list of nearby observation stations. All data here is kept in SI units at
+full precision; callers round for display.
 """
 
 from __future__ import annotations
@@ -13,8 +14,11 @@ from collections.abc import Callable
 from datetime import date, datetime, timedelta
 
 import niquests
+from pydantic import BaseModel, ConfigDict
 
-from ..models import HourlyForecast, Temperature, WeatherReport
+from kindle_dash_gen.models import HourlyForecast, Temperature, WeatherReport
+from kindle_dash_gen.sources.registry import Source, register_source
+from kindle_dash_gen.sources.toolkit import SourceError
 
 NWS_API = "https://api.weather.gov"
 
@@ -25,8 +29,16 @@ _RAIN_KEYWORDS = ("rain", "drizzle", "shower", "thunderstorm", "sleet", "snow", 
 ApparentSeries = list[tuple[datetime, float]]
 
 
-class WeatherError(RuntimeError):
+class WeatherError(SourceError):
     """Raised when weather data cannot be fetched or parsed."""
+
+
+# Exceptions swallowed by the best-effort enrichment lookups (apparent-temperature series, latest
+# observation): these must degrade to empty rather than fail the whole report. Hoisted into named
+# tuples so an inline ``except (A, B):`` isn't reduced by ruff to the confusing bare-tuple form
+# ``except A, B:`` under Python 3.14's grammar (valid there, but non-idiomatic and non-portable).
+_APPARENT_SWALLOW = (WeatherError, KeyError, TypeError)
+_OBSERVATION_SWALLOW = (WeatherError, KeyError, IndexError, TypeError)
 
 
 class NwsClient:
@@ -150,7 +162,7 @@ class NwsClient:
         """Parse the gridpoint apparent-temperature time series, or [] if unavailable."""
         try:
             values = self._get_json(grid_url)["properties"]["apparentTemperature"]["values"]
-        except WeatherError, KeyError, TypeError:
+        except _APPARENT_SWALLOW:
             return []
         series: ApparentSeries = []
         for entry in values:
@@ -174,7 +186,7 @@ class NwsClient:
             if len(stations) == 0:
                 return None, None
             obs = self._get_json(f"{stations[0]['id']}/observations/latest")["properties"]
-        except WeatherError, KeyError, IndexError, TypeError:
+        except _OBSERVATION_SWALLOW:
             return None, None
         text = obs.get("textDescription")
         return _is_raining(obs.get("presentWeather") or [], text), text
@@ -246,3 +258,31 @@ def _is_raining(present_weather: list[dict], text: str | None) -> bool:
     if text is not None:
         return any(keyword in text.lower() for keyword in _RAIN_KEYWORDS)
     return False
+
+
+class NwsConfig(BaseModel):
+    """Config for the ``[sources.nws]`` table."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    latitude: float
+    longitude: float
+    user_agent: str  # NWS requires a User-Agent identifying the caller
+    rollover_hour: int = 20  # after this local hour, high/low show the next day
+    hourly_hours: int = 4  # number of upcoming hourly forecasts to include
+
+
+class _NwsSource(Source[NwsConfig]):
+    """The ``nws`` source: fetches a :class:`WeatherReport` for the configured location."""
+
+    Config = NwsConfig
+
+    def __init__(self, config: NwsConfig) -> None:
+        self._config = config
+        self._client = NwsClient(config.user_agent, config.rollover_hour, config.hourly_hours)
+
+    def fetch(self, now: datetime) -> WeatherReport:
+        return self._client.fetch(self._config.latitude, self._config.longitude)
+
+
+register_source("nws", _NwsSource)

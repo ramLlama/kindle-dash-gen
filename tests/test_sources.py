@@ -68,3 +68,26 @@ def test_build_sources_rejects_extra_key(source_registry) -> None:
 def test_build_sources_empty_is_empty(source_registry) -> None:
     # No configured sources is valid (every render then legitimately skips).
     assert build_sources({}) == {}
+
+
+def test_build_sources_resolves_bundled_nws_and_mta() -> None:
+    # The real bundled sources validate their own [sources.<name>] slices into their Config models.
+    from kindle_dash_gen.sources.builtins.mta import MtaConfig
+    from kindle_dash_gen.sources.builtins.nws import NwsConfig
+
+    resolved = build_sources(
+        {
+            "nws": {"latitude": 40.7, "longitude": -73.9, "user_agent": "x"},
+            "mta": {"stations": {"Union Sq": {"platforms": [{"lines": ["L"], "stop_id": "L03"}]}}},
+        }
+    )
+
+    assert set(resolved) == {"nws", "mta"}
+    assert isinstance(resolved["nws"][1], NwsConfig)
+    assert isinstance(resolved["mta"][1], MtaConfig)
+
+
+def test_build_sources_rejects_extra_key_in_bundled_source() -> None:
+    # Each bundled source keeps extra="forbid", so an unknown key in its slice is rejected.
+    with pytest.raises(ValidationError):
+        build_sources({"nws": {"latitude": 1.0, "longitude": 2.0, "user_agent": "x", "bogus": 1}})

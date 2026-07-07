@@ -8,21 +8,19 @@ from pydantic import ValidationError
 from kindle_dash_gen.config import Secret, load_config
 
 EXAMPLE = """
-[location]
+[sources.nws]
 latitude = 40.7484
 longitude = -73.9857
-
-[weather]
 user_agent = "test-agent (test@example.com)"
 
-[stations."Union Sq"]
+[sources.mta.stations."Union Sq"]
 
-[[stations."Union Sq".platforms]]
+[[sources.mta.stations."Union Sq".platforms]]
 lines = ["N", "Q", "R", "W"]
 stop_id = "R20"
 direction = "both"
 
-[[stations."Union Sq".platforms]]
+[[sources.mta.stations."Union Sq".platforms]]
 lines = ["L"]
 stop_id = "L03"
 
@@ -37,6 +35,12 @@ path = "./out/dashboard.png"
 interval_minutes = 5
 """
 
+# A minimal pillow-only config with no [sources.*] at all (zero sources is valid).
+MINIMAL = """
+[dashboards.main]
+path = "./out/dashboard.png"
+"""
+
 
 def _write(tmp_path: Path, text: str) -> Path:
     path = tmp_path / "config.toml"
@@ -47,15 +51,9 @@ def _write(tmp_path: Path, text: str) -> Path:
 def test_load_config_parses_all_sections(tmp_path: Path) -> None:
     cfg = load_config(_write(tmp_path, EXAMPLE))
 
-    assert cfg.location.latitude == 40.7484
-    assert cfg.weather.units == "us"  # default
-    # Two platforms grouped under one station, merged into one board.
-    assert list(cfg.stations.keys()) == ["Union Sq"]
-    station = cfg.stations["Union Sq"]
-    assert len(station.platforms) == 2
-    assert station.platforms[0].lines == ["N", "Q", "R", "W"]
-    assert station.platforms[1].stop_id == "L03"
-    assert station.platforms[1].direction == "both"  # default
+    # Sources are kept as raw tables here; each is validated by its own plugin (see test_sources).
+    assert cfg.sources["nws"]["latitude"] == 40.7484
+    assert list(cfg.sources["mta"]["stations"].keys()) == ["Union Sq"]
     assert cfg.openrouter.model == "google/gemini-3.1-flash-lite-image"
     dash = cfg.dashboards["main"]
     assert dash.width == 1072  # default (portrait)
@@ -63,7 +61,15 @@ def test_load_config_parses_all_sections(tmp_path: Path) -> None:
     assert dash.post_process_method == "resize"  # default
     assert dash.backend == "pillow"  # default backend
     assert dash.layout == "glanceable"  # default pillow layout
+    assert dash.weather_temp_units == "us"  # default (display units live on the dashboard now)
     assert cfg.schedule.interval_minutes == 5
+
+
+def test_zero_sources_is_valid(tmp_path: Path) -> None:
+    # No [sources.*] at all is legal: every render then legitimately skips (keeps the last image).
+    cfg = load_config(_write(tmp_path, MINIMAL))
+    assert cfg.sources == {}
+    assert cfg.dashboards["main"].backend == "pillow"
 
 
 def test_load_config_defaults_schedule(tmp_path: Path) -> None:
@@ -119,15 +125,6 @@ def test_font_defaults_none_when_unset(tmp_path: Path) -> None:
     assert load_config(_write(tmp_path, text)).dashboards["main"].font == "Futura"
 
 
-def test_station_display_name_optional(tmp_path: Path) -> None:
-    # display_name defaults to None (show the key) and parses when set.
-    assert load_config(_write(tmp_path, EXAMPLE)).stations["Union Sq"].display_name is None
-    text = EXAMPLE.replace(
-        '[stations."Union Sq"]\n', '[stations."Union Sq"]\ndisplay_name = "Union Square"\n'
-    )
-    assert load_config(_write(tmp_path, text)).stations["Union Sq"].display_name == "Union Square"
-
-
 def test_plugins_path_defaults_none_and_parses_absolute(tmp_path: Path) -> None:
     assert load_config(_write(tmp_path, EXAMPLE)).plugins_path is None
     text = 'plugins_path = "/opt/kindle/plugins"\n' + EXAMPLE
@@ -140,8 +137,10 @@ def test_relative_plugins_path_rejected(tmp_path: Path) -> None:
         load_config(_write(tmp_path, text))
 
 
-def test_unknown_key_is_rejected(tmp_path: Path) -> None:
-    text = EXAMPLE.replace("[weather]\n", "[weather]\nbogus = 1\n")
+def test_unknown_top_level_key_is_rejected(tmp_path: Path) -> None:
+    # Config stays strict (extra="forbid") at the top level; per-source strictness is enforced by
+    # each plugin's own model (see test_sources).
+    text = "bogus = 1\n" + EXAMPLE
     with pytest.raises(ValidationError):
         load_config(_write(tmp_path, text))
 

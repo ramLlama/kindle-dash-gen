@@ -7,18 +7,17 @@ import logging
 from datetime import datetime
 from importlib.resources import files
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import typer
 
-from . import __version__, pipeline
+from . import __version__, pipeline, plugins
 from .config import Config, Dashboard, load_config
 from .format import format_eta, format_reading, format_temp, format_wind
 from .models import Direction
 from .render.openrouter import OpenRouterClient
 from .render.postprocess import post_process
-from .sources.mta import MtaClient
-from .sources.weather import NwsClient
+from .sources.registry import build_sources
 
 app = typer.Typer(
     help="Generate a Kindle e-ink dashboard with NYC weather and subway info.",
@@ -44,7 +43,11 @@ def main(ctx: typer.Context, config: ConfigOption = Path("config.toml")) -> None
 
 
 def _config(ctx: typer.Context) -> Config:
-    return load_config(ctx.obj)
+    """Load the config, discover plugins, and eagerly validate every source (fail fast)."""
+    cfg = load_config(ctx.obj)
+    plugins.load_plugins(cfg.plugins_path)
+    build_sources(cfg.sources)  # validate each [sources.<name>] against its plugin now, not mid-run
+    return cfg
 
 
 NameOption = Annotated[
@@ -107,13 +110,21 @@ def run_dashboard(
         pipeline.run(cfg)
 
 
+UnitsOption = Annotated[
+    Literal["us", "si", "both"],
+    typer.Option("--units", help="Display units for weather temperatures."),
+]
+
+
 @app.command()
-def weather(ctx: typer.Context) -> None:
+def weather(ctx: typer.Context, units: UnitsOption = "us") -> None:
     """Fetch and print the current NWS forecast (debug)."""
     cfg = _config(ctx)
-    client = NwsClient(cfg.weather.user_agent, cfg.weather.rollover_hour, cfg.weather.hourly_hours)
-    r = client.fetch(cfg.location.latitude, cfg.location.longitude)
-    units = cfg.weather.units
+    resolved = build_sources(cfg.sources)
+    if "nws" not in resolved:
+        raise typer.BadParameter("no [sources.nws] section configured")
+    source_cls, source_cfg = resolved["nws"]
+    r = source_cls(source_cfg).fetch(datetime.now())
 
     typer.echo(f"{r.location_name or 'Location'} — as of {r.as_of:%a %H:%M}")
     typer.echo(f"Now: {format_reading(r.temperature, units)}  {r.conditions}")
@@ -149,8 +160,12 @@ def weather(ctx: typer.Context) -> None:
 def mta_get_current(ctx: typer.Context) -> None:
     """Fetch and print upcoming subway arrivals."""
     cfg = _config(ctx)
-    boards = MtaClient(cfg.stations).fetch()
+    resolved = build_sources(cfg.sources)
+    if "mta" not in resolved:
+        raise typer.BadParameter("no [sources.mta] section configured")
+    source_cls, source_cfg = resolved["mta"]
     now = datetime.now()
+    boards = source_cls(source_cfg).fetch(now).boards
     for board in boards:
         typer.echo(f"\n{board.name}")
         if len(board.arrivals_by_direction) == 0:

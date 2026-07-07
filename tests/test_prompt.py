@@ -11,6 +11,7 @@ from kindle_dash_gen.models import (
     DashboardData,
     Direction,
     HourlyForecast,
+    MtaBoards,
     StationBoard,
     Temperature,
     TrainArrival,
@@ -98,11 +99,15 @@ def _boards() -> list[StationBoard]:
 
 
 def _dashboard(weather=_MISSING, boards=_MISSING) -> DashboardData:
-    return DashboardData(
-        weather=_weather() if weather is _MISSING else weather,
-        boards=_boards() if boards is _MISSING else boards,
-        generated_at=NOW,
-    )
+    """Build DashboardData from source_data; a None weather or absent boards omits that key."""
+    w = _weather() if weather is _MISSING else weather
+    b = _boards() if boards is _MISSING else boards
+    source_data: dict[type, object] = {}
+    if w is not None:
+        source_data[WeatherReport] = w
+    if b is not None:
+        source_data[MtaBoards] = MtaBoards(boards=b)
+    return DashboardData(generated_at=NOW, source_data=source_data)
 
 
 def test_dense_prompt_renders() -> None:

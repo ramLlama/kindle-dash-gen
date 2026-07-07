@@ -1,8 +1,10 @@
-"""Fetch real-time NYC subway arrivals via the nyct-gtfs GTFS-realtime feeds.
+"""The bundled ``mta`` source: real-time NYC subway arrivals via the nyct-gtfs feeds.
 
-Each MTA feed covers a group of lines (e.g. one feed for N/Q/R/W). A station served by
-several line groups needs several feeds, so this loads each distinct feed at most once per
-fetch. Platforms are grouped under a station display name and merged into one board.
+A source plugin like any other (registers via :func:`register_source` at import). Each MTA feed
+covers a group of lines (e.g. one feed for N/Q/R/W). A station served by several line groups needs
+several feeds, so this loads each distinct feed at most once per fetch. Platforms are grouped under
+a station display name and merged into one board. This source owns its config schema (``Platform``,
+``Station``, ``MtaConfig``), so it is self-contained rather than reaching into central config.
 """
 
 from __future__ import annotations
@@ -10,12 +12,15 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Callable
 from datetime import datetime
+from typing import Literal
 
 from nyct_gtfs import NYCTFeed
 from nyct_gtfs.trip import Trip
+from pydantic import BaseModel, ConfigDict
 
-from ..config import Platform, Station
-from ..models import Direction, StationBoard, TrainArrival
+from kindle_dash_gen.models import Direction, MtaBoards, StationBoard, TrainArrival
+from kindle_dash_gen.sources.registry import Source, register_source
+from kindle_dash_gen.sources.toolkit import SourceError
 
 # GTFS directions, in the order boards present them.
 _DIRECTIONS = (Direction.NORTH, Direction.SOUTH)
@@ -33,7 +38,34 @@ _DIRECTION_SUFFIXES = {
 FeedLoader = Callable[[str], "NYCTFeed"]
 
 
-class MtaError(RuntimeError):
+class Platform(BaseModel):
+    """One physical platform: a GTFS stop id plus the lines that serve it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    lines: list[str]
+    stop_id: str
+    direction: Literal["north", "south", "both"] = "both"
+
+
+class Station(BaseModel):
+    """A display board: one or more platforms merged into per-direction arrival lists.
+
+    Several platforms under one station are merged (e.g. the N/Q/R/W and the L platforms of
+    "Union Sq"). Boards carry every upcoming arrival, sorted; how many to show is a render-time
+    decision made by the layout (see docs/plugins.md), not a data-collection cap.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    platforms: list[Platform]
+    # Label a layout shows instead of the station's name (the config key). The key stays the
+    # canonical name that plugins match on (e.g. home_mta_map), so renaming the display never
+    # breaks that match. Unset means show the name as-is.
+    display_name: str | None = None
+
+
+class MtaError(SourceError):
     """Raised when subway data cannot be fetched."""
 
 
@@ -129,3 +161,26 @@ def _arrival_at(trip: Trip, target_ids: list[str]) -> datetime | None:
         if stop.stop_id in target_ids:
             return stop.arrival
     return None
+
+
+class MtaConfig(BaseModel):
+    """Config for the ``[sources.mta]`` table."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    stations: dict[str, Station]  # display name -> station board
+
+
+class _MtaSource(Source[MtaConfig]):
+    """The ``mta`` source: fetches a :class:`MtaBoards` (one board per configured station)."""
+
+    Config = MtaConfig
+
+    def __init__(self, config: MtaConfig) -> None:
+        self._client = MtaClient(config.stations)
+
+    def fetch(self, now: datetime) -> MtaBoards:
+        return MtaBoards(boards=self._client.fetch(now))
+
+
+register_source("mta", _MtaSource)

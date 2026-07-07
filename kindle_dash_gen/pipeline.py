@@ -13,57 +13,49 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from . import plugins
 from .config import Config, Dashboard
-from .models import DashboardData, StationBoard
+from .models import DashboardData
 from .render import layout
 from .render.openrouter import OpenRouterClient
 from .render.postprocess import post_process
 from .render.prompt import render_prompt
-from .sources.mta import MtaClient, MtaError
-from .sources.weather import NwsClient, WeatherError
+from .sources.registry import SourceError, build_sources
 
 log = logging.getLogger(__name__)
 
 
 def gather(cfg: Config) -> DashboardData:
-    """Fetch weather and subway data for one render, isolating each source.
+    """Fetch every configured source for one render, isolating each.
 
-    A weather failure drops the weather panel; a subway failure drops the arrival boards.
-    Either degradation is logged and the render proceeds with whatever was gathered.
+    Sources are discovered plugins: each ``[sources.<name>]`` is validated, constructed, and
+    fetched. A source that raises a :class:`SourceError` drops its data (logged) and the render
+    proceeds with whatever else was gathered. The result keys each produced data class to its
+    instance (see :class:`DashboardData`); a failed or empty source is simply absent.
     """
-    weather_client = NwsClient(
-        cfg.weather.user_agent, cfg.weather.rollover_hour, cfg.weather.hourly_hours
-    )
-    log.info("fetching weather for %s,%s", cfg.location.latitude, cfg.location.longitude)
-    try:
-        weather = weather_client.fetch(cfg.location.latitude, cfg.location.longitude)
-        if weather is not None:
-            log.info("weather ok: %s", weather.conditions)
-        else:
-            log.info("weather fetch returned no data")
-    except WeatherError as exc:
-        log.warning("weather unavailable (%s); omitting weather panel", exc)
-        weather = None
-
-    log.info("fetching subway arrivals for %d station(s)", len(cfg.stations))
-    try:
-        boards = MtaClient(cfg.stations).fetch()
-        log.info(
-            "subway ok: %d board(s), %d upcoming arrival(s)", len(boards), _count_arrivals(boards)
-        )
-    except MtaError as exc:
-        log.warning("subway unavailable (%s); omitting arrival boards", exc)
-        boards = []
-    return DashboardData(weather=weather, boards=boards, generated_at=datetime.now())
-
-
-def _count_arrivals(boards: list[StationBoard]) -> int:
-    """Total upcoming arrivals across every board and direction (for a log summary)."""
-    return sum(
-        len(arrivals) for board in boards for arrivals in board.arrivals_by_direction.values()
-    )
+    # Discover local (plugins_path) sources too, not just the bundled ones build_sources loads.
+    plugins.load_plugins(cfg.plugins_path)
+    now = datetime.now()
+    source_data: dict[type, Any] = {}
+    for name, (source_cls, source_cfg) in build_sources(cfg.sources).items():
+        try:
+            result = source_cls(source_cfg).fetch(now)
+        except SourceError as exc:
+            log.warning("source %r unavailable (%s); omitting its data", name, exc)
+            continue
+        if result is not None:
+            # source_data is keyed by produced type, so two sources producing the same class would
+            # silently clobber. That's a misconfiguration, not a degraded source, so fail loud.
+            key = type(result)
+            if key in source_data:
+                raise SourceError(
+                    f"source {name!r} produced {key.__name__}, already provided by another source"
+                )
+            source_data[key] = result
+            log.info("source %r ok (%s)", name, key.__name__)
+    return DashboardData(generated_at=now, source_data=source_data)
 
 
 def build_prompt(
@@ -77,7 +69,7 @@ def build_prompt(
     aspect = client.resolve_aspect_ratio(dash.width, dash.height, dash.aspect_ratio)
     prompt = render_prompt(
         data,
-        units=cfg.weather.units,
+        units=dash.weather_temp_units,
         width=dash.width,
         height=dash.height,
         aspect=aspect,
@@ -126,7 +118,7 @@ def _render_pillow(cfg: Config, data: DashboardData, dash: Dashboard) -> bytes:
     log.info("rendering image via pillow layout %r (font %r)", dash.layout, dash.font)
     return layout.render(
         data,
-        units=cfg.weather.units,
+        units=dash.weather_temp_units,
         width=dash.width,
         height=dash.height,
         layout=dash.layout,
@@ -158,8 +150,8 @@ class RunResult:
 def run_once(cfg: Config) -> RunResult:
     """Gather once, then render and write every configured dashboard; report the outcome.
 
-    Data is fetched a single time and shared across all dashboards. If every source failed (no
-    weather and no boards), the render is skipped entirely: writing a blank dashboard would clobber
+    Data is fetched a single time and shared across all dashboards. If every source failed (empty
+    ``source_data``), the render is skipped entirely: writing a blank dashboard would clobber
     the last good images and waste paid generations, so the previous outputs are left in place and
     an empty :class:`RunResult` is returned. Dashboards are isolated from one another — a render or
     write failure for one is logged (with its name) and the remaining dashboards still render; the
@@ -167,7 +159,7 @@ def run_once(cfg: Config) -> RunResult:
     """
     log.info("dashboard render starting for %d dashboard(s)", len(cfg.dashboards))
     data = gather(cfg)
-    if data.weather is None and len(data.boards) == 0:
+    if len(data.source_data) == 0:
         log.warning("all sources unavailable; keeping the last dashboard image(s)")
         return RunResult(written=[], failed=[])
     written: list[Path] = []

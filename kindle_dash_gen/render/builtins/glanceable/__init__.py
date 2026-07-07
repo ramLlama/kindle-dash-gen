@@ -12,7 +12,14 @@ from datetime import datetime
 
 from PIL import Image, ImageDraw
 
-from kindle_dash_gen.models import DashboardData, Direction, TrainArrival, WeatherReport
+from kindle_dash_gen.models import (
+    DashboardData,
+    Direction,
+    MtaBoards,
+    StationBoard,
+    TrainArrival,
+    WeatherReport,
+)
 from kindle_dash_gen.render.layout import register_layout
 from kindle_dash_gen.render.toolkit import (
     DEFAULT_FONT,
@@ -54,10 +61,12 @@ class _Glanceable:
 
     def render(self, data: DashboardData) -> Image.Image:
         y = self._title(_MARGIN, data.generated_at)
-        if data.weather is not None:
-            y = self._hero(y, data.weather)
-            y = self._hourly(y, data.weather)
-        self._subway(y, data)
+        weather = data.source_data.get(WeatherReport)
+        if weather is not None:
+            y = self._hero(y, weather)
+            y = self._hourly(y, weather)
+        mta = data.source_data.get(MtaBoards)
+        self._subway(y, mta.boards if mta is not None else [])
         return self.img
 
     def _paste_icon(self, name: str, cx: float, cy: float, box: int) -> None:
@@ -182,8 +191,7 @@ class _Glanceable:
             y += pitch
         return y + 8
 
-    def _subway(self, y: int, data: DashboardData) -> None:
-        boards = data.boards
+    def _subway(self, y: int, boards: list[StationBoard]) -> None:
         if len(boards) == 0:
             return
         n = len(boards)

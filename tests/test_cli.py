@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime
 from io import BytesIO
 from pathlib import Path
 
@@ -10,20 +11,19 @@ from typer.testing import CliRunner
 
 from kindle_dash_gen import pipeline
 from kindle_dash_gen.cli import app
+from kindle_dash_gen.models import Direction, StationBoard, Temperature, TrainArrival, WeatherReport
 
 runner = CliRunner()
 
 CONFIG = """
-[location]
+[sources.nws]
 latitude = 40.7484
 longitude = -73.9857
-
-[weather]
 user_agent = "test-agent (test@example.com)"
 
-[stations."Union Sq"]
+[sources.mta.stations."Union Sq"]
 
-  [[stations."Union Sq".platforms]]
+  [[sources.mta.stations."Union Sq".platforms]]
   lines = ["N", "Q", "R", "W"]
   stop_id = "R20"
 
@@ -57,7 +57,7 @@ class _FakeMtaClient:
     def __init__(self, *args, **kwargs) -> None:
         pass
 
-    def fetch(self):
+    def fetch(self, now=None):
         return []
 
 
@@ -74,9 +74,10 @@ class _FakeOpenRouterClient:
 
 
 def _patch_clients(monkeypatch) -> None:
-    # gather() and the llm render run in pipeline; preview-prompt builds its client in cli.
-    monkeypatch.setattr("kindle_dash_gen.pipeline.NwsClient", _FakeNwsClient)
-    monkeypatch.setattr("kindle_dash_gen.pipeline.MtaClient", _FakeMtaClient)
+    # gather() constructs the source clients inside the bundled source modules; patch them there.
+    # The llm render runs in pipeline; preview-prompt builds its client in cli.
+    monkeypatch.setattr("kindle_dash_gen.sources.builtins.nws.NwsClient", _FakeNwsClient)
+    monkeypatch.setattr("kindle_dash_gen.sources.builtins.mta.MtaClient", _FakeMtaClient)
     monkeypatch.setattr("kindle_dash_gen.pipeline.OpenRouterClient", _FakeOpenRouterClient)
     monkeypatch.setattr("kindle_dash_gen.cli.OpenRouterClient", _FakeOpenRouterClient)
 
@@ -258,6 +259,113 @@ def test_post_process_requires_single_dashboard(tmp_path) -> None:
         ],
     )
     assert result.exit_code != 0  # ambiguous without --name across multiple dashboards
+
+
+# --- debug source commands (weather / mta get-current), rewired through build_sources in M3 ---
+
+NWS_ONLY = """
+[sources.nws]
+latitude = 40.7484
+longitude = -73.9857
+user_agent = "test-agent (test@example.com)"
+
+[dashboards.main]
+path = "./out/dash.png"
+"""
+
+MTA_ONLY = """
+[sources.mta.stations."Union Sq"]
+
+  [[sources.mta.stations."Union Sq".platforms]]
+  lines = ["N"]
+  stop_id = "R20"
+
+[dashboards.main]
+path = "./out/dash.png"
+"""
+
+
+def _weather_report() -> WeatherReport:
+    return WeatherReport(
+        temperature=Temperature(30.0, 32.0),
+        conditions="Sunny",
+        humidity=50,
+        dewpoint=18.0,
+        wind_speed_kmh=10.0,
+        wind_direction="NW",
+        precip_probability=10,
+        raining=False,
+        observed_conditions="Clear",
+        high=Temperature(31.0, None),
+        low=Temperature(20.0, None),
+        high_low_date=date(2026, 7, 1),
+        forecast="Sunny all day",
+        forecast_name="Today",
+        hourly=[],
+        as_of=datetime(2026, 7, 1, 12, 0, 0),
+        location_name="New York, NY",
+    )
+
+
+class _FakeNwsWithReport:
+    def __init__(self, *args, **kwargs) -> None:
+        pass
+
+    def fetch(self, lat, lon):
+        return _weather_report()
+
+
+class _FakeMtaWithBoard:
+    def __init__(self, *args, **kwargs) -> None:
+        pass
+
+    def fetch(self, now=None):
+        return [
+            StationBoard(
+                name="Union Sq",
+                arrivals_by_direction={
+                    Direction.NORTH: [
+                        TrainArrival(
+                            route="N",
+                            direction=Direction.NORTH,
+                            destination="Astoria",
+                            arrival=now or datetime.now(),
+                        )
+                    ]
+                },
+            )
+        ]
+
+
+def _write(tmp_path: Path, text: str) -> Path:
+    path = tmp_path / "config.toml"
+    path.write_text(text)
+    return path
+
+
+def test_weather_command_prints_forecast(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("kindle_dash_gen.sources.builtins.nws.NwsClient", _FakeNwsWithReport)
+    result = runner.invoke(app, ["--config", str(_write(tmp_path, NWS_ONLY)), "weather"])
+    assert result.exit_code == 0, result.output
+    assert "New York, NY" in result.output  # fetched the report through the nws source
+
+
+def test_weather_command_errors_when_nws_not_configured(tmp_path) -> None:
+    # No [sources.nws] table -> the debug command reports a clean error, not a crash.
+    result = runner.invoke(app, ["--config", str(_write(tmp_path, MTA_ONLY)), "weather"])
+    assert result.exit_code != 0
+
+
+def test_mta_get_current_prints_arrivals(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("kindle_dash_gen.sources.builtins.mta.MtaClient", _FakeMtaWithBoard)
+    result = runner.invoke(app, ["--config", str(_write(tmp_path, MTA_ONLY)), "mta", "get-current"])
+    assert result.exit_code == 0, result.output
+    assert "Union Sq" in result.output  # board fetched through the mta source
+
+
+def test_mta_get_current_errors_when_mta_not_configured(tmp_path) -> None:
+    result = runner.invoke(app, ["--config", str(_write(tmp_path, NWS_ONLY)), "mta", "get-current"])
+    assert result.exit_code != 0
 
 
 def test_dashboard_preview_prompt_prints_without_generating(tmp_path, monkeypatch) -> None:

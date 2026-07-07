@@ -6,7 +6,7 @@ import niquests_mock as nm
 import pytest
 
 from kindle_dash_gen.models import Temperature
-from kindle_dash_gen.sources.weather import NwsClient, WeatherError, _is_raining
+from kindle_dash_gen.sources.builtins.nws import NwsClient, WeatherError, _is_raining
 
 LAT, LON = 40.7484, -73.9857
 POINTS_URL = f"https://api.weather.gov/points/{LAT:.4f},{LON:.4f}"

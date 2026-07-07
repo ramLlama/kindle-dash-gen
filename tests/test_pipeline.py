@@ -9,14 +9,21 @@ from PIL import Image
 
 from kindle_dash_gen import pipeline
 from kindle_dash_gen.config import Config
-from kindle_dash_gen.models import StationBoard
-from kindle_dash_gen.sources.mta import MtaError
-from kindle_dash_gen.sources.weather import WeatherError
+from kindle_dash_gen.models import MtaBoards, StationBoard, WeatherReport
+from kindle_dash_gen.sources.builtins import mta as mta_mod
+from kindle_dash_gen.sources.builtins import nws as nws_mod
+from kindle_dash_gen.sources.builtins.mta import MtaError
+from kindle_dash_gen.sources.builtins.nws import WeatherError
 
 CONFIG: dict = {
-    "location": {"latitude": 40.7484, "longitude": -73.9857},
-    "weather": {"user_agent": "test-agent (test@example.com)"},
-    "stations": {"Union Sq": {"platforms": [{"lines": ["N", "Q"], "stop_id": "R20"}]}},
+    "sources": {
+        "nws": {
+            "latitude": 40.7484,
+            "longitude": -73.9857,
+            "user_agent": "test-agent (test@example.com)",
+        },
+        "mta": {"stations": {"Union Sq": {"platforms": [{"lines": ["N", "Q"], "stop_id": "R20"}]}}},
+    },
     "openrouter": {"model": "test/model", "api_key": {"value": "sk-or-test"}},
     "dashboards": {"main": {"path": "out/dashboard.png", "width": 100, "height": 140}},
     "schedule": {"interval_minutes": 5},
@@ -37,10 +44,12 @@ def _png_bytes(size=(120, 90)) -> bytes:
 
 
 class _FakeMtaClient:
+    """MTA fetch that succeeds with no boards (real client is called with `now`)."""
+
     def __init__(self, *args, **kwargs) -> None:
         pass
 
-    def fetch(self):
+    def fetch(self, now=None):
         return []
 
 
@@ -50,8 +59,16 @@ class _FakeMtaClientWithBoard:
     def __init__(self, *args, **kwargs) -> None:
         pass
 
-    def fetch(self):
+    def fetch(self, now=None):
         return [StationBoard(name="Union Sq", arrivals_by_direction={})]
+
+
+class _FailingMtaClient:
+    def __init__(self, *args, **kwargs) -> None:
+        pass
+
+    def fetch(self, now=None):
+        raise MtaError("feed down")
 
 
 class _FakeOpenRouterClient:
@@ -65,13 +82,9 @@ class _FakeOpenRouterClient:
         return _png_bytes()
 
 
-def _patch_render_clients(monkeypatch) -> None:
-    """Stub the network clients so gather/render run offline against fakes (with subway data)."""
-    monkeypatch.setattr(pipeline, "MtaClient", _FakeMtaClientWithBoard)
-    monkeypatch.setattr(pipeline, "OpenRouterClient", _FakeOpenRouterClient)
-
-
 def _fake_nws(returns=None, raises=None):
+    """A fake NwsClient (patched into the nws source module); its fetch(lat, lon) returns/raises."""
+
     class _FakeNwsClient:
         def __init__(self, *args, **kwargs) -> None:
             pass
@@ -84,38 +97,47 @@ def _fake_nws(returns=None, raises=None):
     return _FakeNwsClient
 
 
+def _patch_render_sources(monkeypatch) -> None:
+    """Stub the network clients so gather/render run offline against fakes (with subway data)."""
+    monkeypatch.setattr(mta_mod, "MtaClient", _FakeMtaClientWithBoard)
+    monkeypatch.setattr(pipeline, "OpenRouterClient", _FakeOpenRouterClient)
+
+
 def test_gather_isolates_weather_failure(monkeypatch) -> None:
-    monkeypatch.setattr(pipeline, "NwsClient", _fake_nws(raises=WeatherError("down")))
-    monkeypatch.setattr(pipeline, "MtaClient", _FakeMtaClient)
+    monkeypatch.setattr(nws_mod, "NwsClient", _fake_nws(raises=WeatherError("down")))
+    monkeypatch.setattr(mta_mod, "MtaClient", _FakeMtaClient)
 
     data = pipeline.gather(Config.model_validate(CONFIG))
 
-    assert data.weather is None  # weather dropped, render still proceeds
-    assert data.boards == []
+    assert WeatherReport not in data.source_data  # weather dropped, render still proceeds
+    assert data.source_data[MtaBoards].boards == []  # subway present (empty), render proceeds
 
 
 def test_gather_isolates_subway_failure(monkeypatch) -> None:
     sentinel = SimpleNamespace(conditions="Sunny")  # stands in for a WeatherReport
-    monkeypatch.setattr(pipeline, "NwsClient", _fake_nws(returns=sentinel))
-
-    class _FailingMtaClient:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        def fetch(self):
-            raise MtaError("feed down")
-
-    monkeypatch.setattr(pipeline, "MtaClient", _FailingMtaClient)
+    monkeypatch.setattr(nws_mod, "NwsClient", _fake_nws(returns=sentinel))
+    monkeypatch.setattr(mta_mod, "MtaClient", _FailingMtaClient)
 
     data = pipeline.gather(Config.model_validate(CONFIG))
 
-    assert data.weather is sentinel  # weather survives a subway outage
-    assert data.boards == []
+    assert data.source_data[type(sentinel)] is sentinel  # weather survives a subway outage
+    assert MtaBoards not in data.source_data  # subway dropped
+
+
+def test_gather_keys_source_data_by_produced_type(monkeypatch) -> None:
+    # source_data is keyed by the class each source produces, so consumers look up by type.
+    weather = SimpleNamespace(conditions="Clear")
+    monkeypatch.setattr(nws_mod, "NwsClient", _fake_nws(returns=weather))
+    monkeypatch.setattr(mta_mod, "MtaClient", _FakeMtaClientWithBoard)
+
+    data = pipeline.gather(Config.model_validate(CONFIG))
+
+    assert set(data.source_data) == {type(weather), MtaBoards}
 
 
 def test_run_once_writes_kindle_ready_image(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(pipeline, "NwsClient", _fake_nws(returns=None))
-    _patch_render_clients(monkeypatch)
+    monkeypatch.setattr(nws_mod, "NwsClient", _fake_nws(returns=None))
+    _patch_render_sources(monkeypatch)
     cfg = _config(tmp_path)
 
     result = pipeline.run_once(cfg)
@@ -136,8 +158,8 @@ def test_run_once_renders_every_dashboard_from_one_gather(tmp_path, monkeypatch)
         gathers["count"] += 1
         return real_gather(cfg)
 
-    monkeypatch.setattr(pipeline, "NwsClient", _fake_nws(returns=None))
-    monkeypatch.setattr(pipeline, "MtaClient", _FakeMtaClientWithBoard)
+    monkeypatch.setattr(nws_mod, "NwsClient", _fake_nws(returns=None))
+    monkeypatch.setattr(mta_mod, "MtaClient", _FakeMtaClientWithBoard)
     monkeypatch.setattr(pipeline, "gather", _counting_gather)
 
     cfg = _config(tmp_path)
@@ -195,10 +217,10 @@ def test_run_continues_after_iteration_failure(monkeypatch) -> None:
 
 def test_run_once_isolates_a_failing_dashboard(tmp_path, monkeypatch) -> None:
     # A render failure for one dashboard is caught and logged; the other dashboards still render.
-    # (Only per-source WeatherError/MtaError are swallowed inside gather(); render errors are
-    # isolated per dashboard here so one bad layout can't sink the rest.)
-    monkeypatch.setattr(pipeline, "NwsClient", _fake_nws(returns=None))
-    _patch_render_clients(monkeypatch)
+    # (Only a SourceError is swallowed inside gather(); render errors are isolated per dashboard
+    # here so one bad layout can't sink the rest.)
+    monkeypatch.setattr(nws_mod, "NwsClient", _fake_nws(returns=None))
+    _patch_render_sources(monkeypatch)
 
     class _BoomClient(_FakeOpenRouterClient):
         def generate(self, prompt, *, aspect_ratio, resolution=None):
@@ -220,9 +242,11 @@ def test_run_once_isolates_a_failing_dashboard(tmp_path, monkeypatch) -> None:
 
 
 def test_run_once_skips_render_when_all_sources_down(tmp_path, monkeypatch) -> None:
-    # Both sources empty: run_once must not spend a paid generation or overwrite the last image.
-    monkeypatch.setattr(pipeline, "NwsClient", _fake_nws(returns=None))
-    monkeypatch.setattr(pipeline, "MtaClient", _FakeMtaClient)  # returns []
+    # Every source fails: run_once must not spend a paid generation or overwrite the last image.
+    # (A source that *succeeds* with empty data still counts as present; skipping needs true
+    # failure, so both sources are made to raise/return-nothing here.)
+    monkeypatch.setattr(nws_mod, "NwsClient", _fake_nws(returns=None))  # no weather data
+    monkeypatch.setattr(mta_mod, "MtaClient", _FailingMtaClient)  # subway feed down
 
     def _must_not_render(cfg, data, dash):
         raise AssertionError("render() must not run when all sources are down")
