@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from kindle_dash_gen.config import Platform, Station
-from kindle_dash_gen.models import Direction
+from kindle_dash_gen.models import Direction, MtaBoards, StationBoard
 from kindle_dash_gen.sources.mta import MtaClient, MtaError
 
 NOW = datetime(2026, 7, 1, 12, 0, 0)
@@ -177,3 +177,11 @@ def test_unknown_line_raises() -> None:
     stations = {"Nowhere": _station([_platform(lines=["ZZ"])])}
     with pytest.raises(MtaError):
         MtaClient(stations, feed_loader=loader).fetch(now=NOW)
+
+
+def test_mta_boards_wraps_station_boards() -> None:
+    # MtaBoards is the single value the MTA source contributes to DashboardData.source_data;
+    # it just carries the per-station boards under one type key.
+    board = StationBoard(name="Union Sq", arrivals_by_direction={})
+    boards = MtaBoards(boards=[board])
+    assert boards.boards == [board]

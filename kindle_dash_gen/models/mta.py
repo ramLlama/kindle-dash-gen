@@ -40,3 +40,14 @@ class StationBoard:
     def label(self) -> str:
         """Name a layout should show: ``display_name`` if set, else the canonical ``name``."""
         return self.display_name if self.display_name is not None else self.name
+
+
+@dataclass(frozen=True, kw_only=True)
+class MtaBoards:
+    """All station boards from one MTA fetch, wrapped as a single value.
+
+    The subway source contributes this to ``DashboardData.source_data`` under its own type key
+    (a bare ``list[StationBoard]`` can't key that dict); consumers read ``.boards``.
+    """
+
+    boards: list[StationBoard]
