@@ -125,6 +125,8 @@ class Dashboard(BaseModel):
     height: int = 1448
     gray_levels: int = 16
     post_process_method: PostProcessMethod = "resize"
+    # rotate the final image 90° before writing (for a physically rotated device)
+    rotate: bool = False
     aspect_ratio: str | None = None  # e.g. "4:3"; unset picks the model's nearest supported
     resolution: str | None = None  # e.g. "1K"; unset uses the model's default
 

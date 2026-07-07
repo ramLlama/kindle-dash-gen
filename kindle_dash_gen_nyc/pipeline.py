@@ -108,6 +108,7 @@ def render(cfg: Config, data: DashboardData, dash: Dashboard) -> bytes:
         height=dash.height,
         gray_levels=dash.gray_levels,
         method=dash.post_process_method,
+        rotate=dash.rotate,
     )
 
 

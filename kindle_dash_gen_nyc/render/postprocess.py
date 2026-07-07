@@ -22,15 +22,19 @@ def post_process(
     height: int,
     gray_levels: int,
     method: PostProcessMethod,
+    rotate: bool,
 ) -> bytes:
     """Fit, grayscale, and quantize ``png`` into a Kindle-ready PNG.
 
     Steps, in order: grayscale → fit to ``(width, height)`` via ``method`` → quantize to
-    ``gray_levels`` evenly-spaced grays. Returns PNG bytes.
+    ``gray_levels`` evenly-spaced grays → optionally rotate 90° (for a physically rotated
+    device). Returns PNG bytes.
     """
     img = Image.open(BytesIO(png)).convert("L")
     img = _fit(img, width, height, method)
     img = img.point(_quantize_lut(gray_levels))
+    if rotate:
+        img = img.transpose(Image.Transpose.ROTATE_90)
 
     buffer = BytesIO()
     img.save(buffer, format="PNG")

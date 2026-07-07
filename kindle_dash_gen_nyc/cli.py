@@ -230,6 +230,7 @@ def dashboard_post_process(
         height=dash.height,
         gray_levels=dash.gray_levels,
         method=dash.post_process_method,
+        rotate=dash.rotate,
     )
     output_file.parent.mkdir(parents=True, exist_ok=True)
     output_file.write_bytes(png)

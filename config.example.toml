@@ -98,6 +98,7 @@ gray_levels = 16           # Voyage 4-bit grayscale
 #   "crop"   -- scale to cover, center-crop the excess (no distortion, trims a sliver)
 #   "pad"    -- scale to fit, add white e-ink bars (nothing cropped or distorted)
 post_process_method = "resize"
+# rotate = true             # rotate the final image 90° before writing (for a physically rotated device)
 # aspect_ratio = "3:4"      # llm backend: override the model's nearest-match aspect ratio
 # resolution = "1K"         # llm backend: override the model's default resolution
 
