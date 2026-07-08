@@ -1,8 +1,7 @@
-"""Pillow rendering backend: the layout registry and dispatch.
+"""Pillow rendering: the layout registry and dispatch.
 
-The alternative to the LLM backend (:mod:`kindle_dash_gen.render.openrouter`). A named *layout*
-draws :class:`DashboardData` directly with Pillow at the device's native resolution, so the output
-is exact, free, offline, and never garbles the underlying data.
+A named *layout* draws :class:`DashboardData` directly with Pillow at the device's native
+resolution, so the output is exact, free, offline, and never garbles the underlying data.
 
 Layouts are **plugins** — nothing is special-cased here. Each layout (the bundled ``glanceable``
 included) is a package under a discovered plugin root that calls :func:`register_layout` at import

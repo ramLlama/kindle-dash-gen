@@ -24,7 +24,6 @@ CONFIG: dict = {
         },
         "mta": {"stations": {"Union Sq": {"platforms": [{"lines": ["N", "Q"], "stop_id": "R20"}]}}},
     },
-    "openrouter": {"model": "test/model", "api_key": {"value": "sk-or-test"}},
     "dashboards": {"main": {"path": "out/dashboard.png", "width": 100, "height": 140}},
     "schedule": {"interval_minutes": 5},
 }
@@ -35,12 +34,6 @@ def _config(tmp_path) -> Config:
     # parent dir does not exist yet
     cfg.dashboards["main"].path = tmp_path / "out" / "dashboard.png"
     return cfg
-
-
-def _png_bytes(size=(120, 90)) -> bytes:
-    buffer = BytesIO()
-    Image.new("RGB", size, (120, 120, 120)).save(buffer, format="PNG")
-    return buffer.getvalue()
 
 
 class _FakeMtaClient:
@@ -71,17 +64,6 @@ class _FailingMtaClient:
         raise MtaError("feed down")
 
 
-class _FakeOpenRouterClient:
-    def __init__(self, *args, **kwargs) -> None:
-        pass
-
-    def resolve_aspect_ratio(self, width, height, override=None) -> str:
-        return "4:3"
-
-    def generate(self, prompt, *, aspect_ratio, resolution=None) -> bytes:
-        return _png_bytes()
-
-
 def _fake_nws(returns=None, raises=None):
     """A fake NwsClient (patched into the nws source module); its fetch(lat, lon) returns/raises."""
 
@@ -98,9 +80,8 @@ def _fake_nws(returns=None, raises=None):
 
 
 def _patch_render_sources(monkeypatch) -> None:
-    """Stub the network clients so gather/render run offline against fakes (with subway data)."""
+    """Stub the source clients so gather runs offline against fakes (with subway data)."""
     monkeypatch.setattr(mta_mod, "MtaClient", _FakeMtaClientWithBoard)
-    monkeypatch.setattr(pipeline, "OpenRouterClient", _FakeOpenRouterClient)
 
 
 def test_gather_isolates_weather_failure(monkeypatch) -> None:
@@ -222,16 +203,11 @@ def test_run_once_isolates_a_failing_dashboard(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(nws_mod, "NwsClient", _fake_nws(returns=None))
     _patch_render_sources(monkeypatch)
 
-    class _BoomClient(_FakeOpenRouterClient):
-        def generate(self, prompt, *, aspect_ratio, resolution=None):
-            raise RuntimeError("openrouter exploded")
-
-    monkeypatch.setattr(pipeline, "OpenRouterClient", _BoomClient)
-
     cfg = _config(tmp_path)
-    # A pillow dashboard that renders fine, plus an llm one whose generate() explodes.
+    # A healthy glanceable dashboard, plus one pointing at a layout that doesn't exist (its render
+    # raises LayoutError, isolated to that dashboard).
     cfg.dashboards["broken"] = cfg.dashboards["main"].model_copy(
-        update={"path": tmp_path / "out" / "broken.png", "backend": "llm"}
+        update={"path": tmp_path / "out" / "broken.png", "layout": "does-not-exist"}
     )
 
     result = pipeline.run_once(cfg)  # does not raise

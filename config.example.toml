@@ -61,55 +61,27 @@ hourly_hours = 4       # number of upcoming hourly forecasts to include
   stop_id = "D19"
   direction = "both"
 
-# [openrouter] is only needed when some dashboard uses backend = "llm" (below). The default pillow
-# backend draws the dashboard locally and needs no API key, so you can delete this whole section.
-[openrouter]
-model = "google/gemini-3.1-flash-lite-image"
-# Provide the API key either inline or via a command that prints it:
-api_key = { value_from_cmd = "pass show openrouter/key" }
-# api_key = { value = "sk-or-..." }
-prompt_template = "dense"  # bundled template name, or a filesystem path to your own "*.j2" file
-# prompt_template = "./my_prompt.j2"
-
-# Custom templates (prompt_template pointing at your own file) are Jinja2 and get this context:
-#   weather -- WeatherReport | None      boards  -- list[StationBoard]
-#   units   -- "us" | "si" | "both" (from the dashboard's weather_temp_units)
-#   width, height -- int (from [dashboards.<name>] below)
-#   aspect  -- resolved aspect ratio, e.g. "4:3"     now -- datetime (= generation time)
-# Plus display-formatting helpers as globals:
-#   format_reading(temp, units)   format_apparent(temp, units)   format_temp(celsius, units)
-#   format_wind(kmh, direction, units)      format_eta(arrival, now)
-#   weather_icon(report) -> "sunny" | "cloudy" | "rain" | "snow"
-# See kindle_dash_gen/render/prompt.py and assets/dashboard_prompts/dense.j2 for details.
-
 # One or more output dashboards, each keyed by a name ([dashboards.<name>]). A single run gathers
 # every source's data once and renders every dashboard from it, writing each to its own path.
 # The name appears in the run's log lines. At least one dashboard is required.
 [dashboards.main]
 path = "./out/dashboard.png"
-# Rendering backend:
-#   "pillow" -- draw the dashboard locally (free, offline, exact); no [openrouter] needed
-#   "llm"    -- an OpenRouter image model renders from a prompt (requires [openrouter])
-backend = "pillow"
-# Display units for weather temperatures, used by both backends: "us" (°F), "si" (°C), or "both".
+# Display units for weather temperatures: "us" (°F), "si" (°C), or "both".
 weather_temp_units = "both"
-layout = "glanceable"      # pillow backend: bundled layout name (see docs/plugins.md)
-# font: pillow backend system font family (fontconfig). Omit to let the layout choose its own
-# default (glanceable uses "Adwaita Sans"; home_mta_map uses Futura + Helvetica Neue). A set value
-# overrides the layout's default for every glyph.
+layout = "glanceable"      # bundled layout name (see docs/plugins.md)
+# font: system font family (fontconfig). Omit to let the layout choose its own default (glanceable
+# uses "Adwaita Sans"). A set value overrides the layout's default for every glyph.
 font = "Adwaita Sans"
 width = 1072               # Kindle Voyage, portrait (native orientation)
 height = 1448
 gray_levels = 16           # Voyage 4-bit grayscale
-# How the rendered image is fitted to width x height (mainly for the llm backend; the pillow
-# backend already draws at the exact size, so only the gray-level quantization applies):
+# How the rendered image is fitted to width x height (the layout draws at the exact size, so only
+# the gray-level quantization normally applies):
 #   "resize" -- stretch to fill, ignoring aspect (minor distortion)
 #   "crop"   -- scale to cover, center-crop the excess (no distortion, trims a sliver)
 #   "pad"    -- scale to fit, add white e-ink bars (nothing cropped or distorted)
 post_process_method = "resize"
 # rotate = true             # rotate the final image 90° before writing (for a physically rotated device)
-# aspect_ratio = "3:4"      # llm backend: override the model's nearest-match aspect ratio
-# resolution = "1K"         # llm backend: override the model's default resolution
 
 # A second dashboard rendered from the same data to a different path (e.g. a second device, or a
 # landscape variant). Delete this block if you only need one output.

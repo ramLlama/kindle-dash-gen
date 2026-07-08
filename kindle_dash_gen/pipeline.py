@@ -1,4 +1,4 @@
-"""End-to-end dashboard pipeline: gather → prompt → generate → post-process → write.
+"""End-to-end dashboard pipeline: gather → render → post-process → write.
 
 Runs as a single one-shot or on an interval loop. Each data source is isolated: a source
 that fails degrades the dashboard (drops its panel) rather than aborting the whole render.
@@ -19,9 +19,7 @@ from . import plugins
 from .config import Config, Dashboard
 from .models import DashboardData
 from .render import layout
-from .render.openrouter import OpenRouterClient
 from .render.postprocess import post_process
-from .render.prompt import render_prompt
 from .sources.registry import SourceError, build_sources
 
 log = logging.getLogger(__name__)
@@ -58,37 +56,16 @@ def gather(cfg: Config) -> DashboardData:
     return DashboardData(generated_at=now, source_data=source_data)
 
 
-def build_prompt(
-    cfg: Config, data: DashboardData, client: OpenRouterClient, dash: Dashboard
-) -> tuple[str, str]:
-    """Resolve the model's aspect ratio and render the OpenRouter prompt for ``data``.
-
-    Returns ``(prompt, aspect_ratio)`` so the caller can pass the same aspect on to generate().
-    """
-    assert cfg.openrouter is not None  # only called for the llm backend, which requires it
-    aspect = client.resolve_aspect_ratio(dash.width, dash.height, dash.aspect_ratio)
-    prompt = render_prompt(
-        data,
-        units=dash.weather_temp_units,
-        width=dash.width,
-        height=dash.height,
-        aspect=aspect,
-        template=cfg.openrouter.prompt_template,
-    )
-    return prompt, aspect
-
-
 def render(cfg: Config, data: DashboardData, dash: Dashboard) -> bytes:
-    """Render ``data`` into a Kindle-ready PNG via ``dash``'s backend, then post-process.
+    """Draw the dashboard with its pillow layout and return a Kindle-ready PNG.
 
-    Both backends produce raw PNG bytes; ``post_process`` then grayscales, fits, and quantizes to
-    the device's gray levels. For the pillow backend the image is already the exact panel size, so
-    the fit step is a no-op and only the quantization matters.
+    ``render_raw`` draws ``data`` at the panel size; ``post_process`` then grayscales, fits, and
+    quantizes to the device's gray levels. The image is already exact-sized, so the fit step is a
+    no-op and only the quantization matters.
     """
     raw = render_raw(cfg, data, dash)
     log.info(
-        "post-processing %d bytes to %dx%d, %d gray levels (%s)",
-        len(raw),
+        "post-processing to %dx%d, %d gray levels (%s)",
         dash.width,
         dash.height,
         dash.gray_levels,
@@ -105,17 +82,10 @@ def render(cfg: Config, data: DashboardData, dash: Dashboard) -> bytes:
 
 
 def render_raw(cfg: Config, data: DashboardData, dash: Dashboard) -> bytes:
-    """Render raw PNG bytes via ``dash``'s backend, before Kindle post-processing."""
-    # Register bundled + any configured local layout plugins before a pillow layout is looked up.
+    """Draw the dashboard with its pillow layout — raw PNG bytes, before Kindle post-processing."""
+    # Register bundled + any configured local layout plugins before the layout is looked up.
     plugins.load_plugins(cfg.plugins_path)
-    if dash.backend == "pillow":
-        return _render_pillow(cfg, data, dash)
-    return _render_llm(cfg, data, dash)
-
-
-def _render_pillow(cfg: Config, data: DashboardData, dash: Dashboard) -> bytes:
-    """Draw the dashboard locally with the Pillow layout backend (raw PNG bytes)."""
-    log.info("rendering image via pillow layout %r (font %r)", dash.layout, dash.font)
+    log.info("rendering image via layout %r (font %r)", dash.layout, dash.font)
     return layout.render(
         data,
         units=dash.weather_temp_units,
@@ -124,15 +94,6 @@ def _render_pillow(cfg: Config, data: DashboardData, dash: Dashboard) -> bytes:
         layout=dash.layout,
         font=dash.font,
     )
-
-
-def _render_llm(cfg: Config, data: DashboardData, dash: Dashboard) -> bytes:
-    """Generate the dashboard via the OpenRouter image model backend (raw PNG bytes)."""
-    assert cfg.openrouter is not None  # guaranteed by Config validation when a backend == "llm"
-    client = OpenRouterClient(cfg.openrouter.model, cfg.openrouter.api_key.resolve())
-    prompt, aspect = build_prompt(cfg, data, client, dash)
-    log.info("generating image via %s (aspect %s)", cfg.openrouter.model, aspect)
-    return client.generate(prompt, aspect_ratio=aspect, resolution=dash.resolution)
 
 
 @dataclass(frozen=True)

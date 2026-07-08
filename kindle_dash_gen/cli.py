@@ -15,7 +15,6 @@ from . import __version__, pipeline, plugins
 from .config import Config, Dashboard, load_config
 from .format import format_eta, format_reading, format_temp, format_wind
 from .models import Direction
-from .render.openrouter import OpenRouterClient
 from .render.postprocess import post_process
 from .sources.registry import build_sources
 
@@ -189,19 +188,6 @@ def mta_list_stations() -> None:
         typer.echo(f"{stop_id:<{id_width}}  {routes:<{routes_width}}  {name}")
 
 
-@dashboard_app.command("preview-prompt")
-def dashboard_preview_prompt(ctx: typer.Context, names: NameOption = None) -> None:
-    """Fetch live data and print the OpenRouter prompt without generating an image (debug)."""
-    cfg = _config(ctx)
-    if cfg.openrouter is None:
-        raise typer.BadParameter("preview-prompt applies only to the 'llm' backend ([openrouter])")
-    _, dash = _one_dashboard(cfg, names)
-    data = pipeline.gather(cfg)
-    client = OpenRouterClient(cfg.openrouter.model)
-    prompt, _ = pipeline.build_prompt(cfg, data, client, dash)
-    typer.echo(prompt)
-
-
 @dashboard_app.command("render")
 def dashboard_render(
     ctx: typer.Context,
@@ -211,7 +197,7 @@ def dashboard_render(
         typer.Argument(help="Write a single dashboard's PNG here (needs one --name if several)."),
     ] = None,
 ) -> None:
-    """Fetch live data once and render every dashboard's PNG via its configured backend.
+    """Fetch live data once and render every dashboard's PNG via its pillow layout.
 
     Writes the raw rendered image (before Kindle post-processing) to each dashboard's path; run
     ``dashboard post-process`` to massage it for the device. Restrict to a subset with repeated

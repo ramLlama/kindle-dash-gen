@@ -2,85 +2,29 @@
 
 from __future__ import annotations
 
-import subprocess
 import tomllib
 from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
-
-class Secret(BaseModel):
-    """A secret resolved from either a literal value or the stdout of a command.
-
-    Exactly one of ``value`` or ``value_from_cmd`` must be set.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    value: str | None = None
-    value_from_cmd: str | None = None
-
-    @model_validator(mode="after")
-    def _exactly_one(self) -> Secret:
-        has_value = self.value is not None
-        has_cmd = self.value_from_cmd is not None
-        if has_value == has_cmd:
-            raise ValueError("set exactly one of 'value' or 'value_from_cmd'")
-        return self
-
-    def resolve(self) -> str:
-        """Return the literal value, or run the command and return stripped stdout."""
-        if self.value is not None:
-            return self.value
-        assert self.value_from_cmd is not None  # guaranteed by validator
-        result = subprocess.run(
-            self.value_from_cmd,
-            shell=True,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"value_from_cmd failed ({result.returncode}): "
-                f"{self.value_from_cmd!r}\n{result.stderr.strip()}"
-            )
-        return result.stdout.strip()
-
-
-class OpenRouter(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    model: str
-    api_key: Secret
-    prompt_template: str = "dense"  # bundled template name, or a filesystem path to a .j2 file
-
-
-# How the generated image is fitted to the Kindle's exact pixel dimensions:
+# How the rendered image is fitted to the Kindle's exact pixel dimensions:
 #   resize -- stretch to fill, ignoring aspect (minor distortion)
 #   crop   -- scale to cover, center-crop the excess (no distortion, trims a sliver)
 #   pad    -- scale to fit, add white e-ink bars (nothing cropped or distorted)
 PostProcessMethod = Literal["resize", "crop", "pad"]
-
-# Which rendering backend draws the dashboard:
-#   pillow -- deterministic local layout (free, offline, exact); see render/layout.py
-#   llm    -- an OpenRouter image model renders from a prompt; needs the [openrouter] section
-RenderBackend = Literal["pillow", "llm"]
 
 
 class Dashboard(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     path: Path
-    backend: RenderBackend = "pillow"
     # Display units for weather temperatures (data is always SI internally; rounded/converted at
-    # render). A whole-dashboard presentation choice used by both backends, so it lives here rather
-    # than on the weather source.
+    # render). A whole-dashboard presentation choice, so it lives here rather than on the source.
     weather_temp_units: Literal["us", "si", "both"] = "us"
-    layout: str = "glanceable"  # pillow backend: registered layout plugin (see docs/plugins.md)
-    # pillow backend: system font family (resolved via fontconfig). None = unspecified, letting a
-    # layout choose its own default (glanceable falls back to toolkit.DEFAULT_FONT; home_mta_map
-    # uses Futura + Helvetica Neue). A set value overrides the layout's default for every glyph.
+    layout: str = "glanceable"  # registered layout plugin (see docs/plugins.md)
+    # System font family (resolved via fontconfig). None = unspecified, letting a layout choose its
+    # own default (glanceable falls back to toolkit.DEFAULT_FONT). A set value overrides it.
     font: str | None = None
     width: int = 1072  # Kindle Voyage, portrait (native orientation)
     height: int = 1448
@@ -88,8 +32,6 @@ class Dashboard(BaseModel):
     post_process_method: PostProcessMethod = "resize"
     # rotate the final image 90° before writing (for a physically rotated device)
     rotate: bool = False
-    aspect_ratio: str | None = None  # e.g. "4:3"; unset picks the model's nearest supported
-    resolution: str | None = None  # e.g. "1K"; unset uses the model's default
 
 
 class Schedule(BaseModel):
@@ -105,7 +47,6 @@ class Config(BaseModel):
     # source owns its own schema. See kindle_dash_gen.sources.registry.build_sources. Zero sources
     # is valid: every render then legitimately skips (keeps the last image).
     sources: dict[str, dict[str, Any]] = {}
-    openrouter: OpenRouter | None = None  # required only when a dashboard's backend == "llm"
     dashboards: dict[str, Dashboard]  # name -> output; one shared data fetch renders each
     plugins_path: Path | None = None  # absolute dir of private render plugins (see docs/plugins.md)
     schedule: Schedule = Schedule()
@@ -114,8 +55,6 @@ class Config(BaseModel):
     def _validate_dashboards(self) -> Config:
         if len(self.dashboards) == 0:
             raise ValueError("at least one [dashboards.<name>] section is required")
-        if self.openrouter is None and any(d.backend == "llm" for d in self.dashboards.values()):
-            raise ValueError("a dashboard with backend = 'llm' requires an [openrouter] section")
         # Absolute so plugin discovery is unambiguous regardless of the process's working directory.
         if self.plugins_path is not None and not self.plugins_path.is_absolute():
             raise ValueError(f"plugins_path must be an absolute path, got {self.plugins_path}")

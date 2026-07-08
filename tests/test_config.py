@@ -1,11 +1,11 @@
-"""Tests for config loading and secret resolution."""
+"""Tests for config loading."""
 
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
-from kindle_dash_gen.config import Secret, load_config
+from kindle_dash_gen.config import load_config
 
 EXAMPLE = """
 [sources.nws]
@@ -23,10 +23,6 @@ direction = "both"
 [[sources.mta.stations."Union Sq".platforms]]
 lines = ["L"]
 stop_id = "L03"
-
-[openrouter]
-model = "google/gemini-3.1-flash-lite-image"
-api_key = { value = "sk-or-test" }
 
 [dashboards.main]
 path = "./out/dashboard.png"
@@ -54,13 +50,11 @@ def test_load_config_parses_all_sections(tmp_path: Path) -> None:
     # Sources are kept as raw tables here; each is validated by its own plugin (see test_sources).
     assert cfg.sources["nws"]["latitude"] == 40.7484
     assert list(cfg.sources["mta"]["stations"].keys()) == ["Union Sq"]
-    assert cfg.openrouter.model == "google/gemini-3.1-flash-lite-image"
     dash = cfg.dashboards["main"]
     assert dash.width == 1072  # default (portrait)
     assert dash.gray_levels == 16  # default
     assert dash.post_process_method == "resize"  # default
-    assert dash.backend == "pillow"  # default backend
-    assert dash.layout == "glanceable"  # default pillow layout
+    assert dash.layout == "glanceable"  # default layout
     assert dash.weather_temp_units == "us"  # default (display units live on the dashboard now)
     assert cfg.schedule.interval_minutes == 5
 
@@ -69,36 +63,13 @@ def test_zero_sources_is_valid(tmp_path: Path) -> None:
     # No [sources.*] at all is legal: every render then legitimately skips (keeps the last image).
     cfg = load_config(_write(tmp_path, MINIMAL))
     assert cfg.sources == {}
-    assert cfg.dashboards["main"].backend == "pillow"
+    assert cfg.dashboards["main"].layout == "glanceable"
 
 
 def test_load_config_defaults_schedule(tmp_path: Path) -> None:
     text = EXAMPLE.replace("\n[schedule]\ninterval_minutes = 5\n", "")
     cfg = load_config(_write(tmp_path, text))
     assert cfg.schedule.interval_minutes == 5
-
-
-def _without_openrouter(text: str) -> str:
-    return text.replace(
-        '[openrouter]\nmodel = "google/gemini-3.1-flash-lite-image"\n'
-        'api_key = { value = "sk-or-test" }\n',
-        "",
-    )
-
-
-def test_pillow_backend_needs_no_openrouter(tmp_path: Path) -> None:
-    # The default (pillow) backend needs no [openrouter] section.
-    cfg = load_config(_write(tmp_path, _without_openrouter(EXAMPLE)))
-    assert cfg.openrouter is None
-    assert cfg.dashboards["main"].backend == "pillow"
-
-
-def test_llm_backend_requires_openrouter(tmp_path: Path) -> None:
-    text = _without_openrouter(EXAMPLE).replace(
-        "[dashboards.main]\n", '[dashboards.main]\nbackend = "llm"\n'
-    )
-    with pytest.raises(ValidationError):
-        load_config(_write(tmp_path, text))
 
 
 def test_multiple_dashboards_parse(tmp_path: Path) -> None:
@@ -143,27 +114,3 @@ def test_unknown_top_level_key_is_rejected(tmp_path: Path) -> None:
     text = "bogus = 1\n" + EXAMPLE
     with pytest.raises(ValidationError):
         load_config(_write(tmp_path, text))
-
-
-def test_secret_value_resolves_literal() -> None:
-    assert Secret(value="hunter2").resolve() == "hunter2"
-
-
-def test_secret_from_cmd_resolves_stdout() -> None:
-    assert Secret(value_from_cmd="printf 'from-cmd'").resolve() == "from-cmd"
-
-
-def test_secret_from_cmd_strips_whitespace() -> None:
-    assert Secret(value_from_cmd="echo padded").resolve() == "padded"
-
-
-def test_secret_from_cmd_nonzero_exit_raises() -> None:
-    with pytest.raises(RuntimeError):
-        Secret(value_from_cmd="exit 3").resolve()
-
-
-def test_secret_requires_exactly_one() -> None:
-    with pytest.raises(ValidationError):
-        Secret()
-    with pytest.raises(ValidationError):
-        Secret(value="a", value_from_cmd="echo b")

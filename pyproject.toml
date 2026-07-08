@@ -10,7 +10,6 @@ dependencies = [
     "nyct-gtfs==2.*",
     "pillow==12.*",
     "pydantic==2.*",
-    "jinja2==3.*",
 ]
 
 [dependency-groups]

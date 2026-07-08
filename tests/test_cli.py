@@ -27,12 +27,7 @@ user_agent = "test-agent (test@example.com)"
   lines = ["N", "Q", "R", "W"]
   stop_id = "R20"
 
-[openrouter]
-model = "google/gemini-3.1-flash-lite-image"
-api_key = { value = "sk-or-test" }
-
 [dashboards.main]
-backend = "llm"
 path = "./out/dashboard.png"
 width = 100
 height = 140
@@ -58,31 +53,22 @@ class _FakeMtaClient:
         pass
 
     def fetch(self, now=None):
-        return []
-
-
-class _FakeOpenRouterClient:
-    def __init__(self, model, api_key=None, session=None) -> None:
-        self.model = model
-        self.api_key = api_key
-
-    def resolve_aspect_ratio(self, width, height, override=None) -> str:
-        return "4:3"
-
-    def generate(self, prompt, *, aspect_ratio, resolution=None) -> bytes:
-        return b"FAKE-PNG-BYTES"
+        return [StationBoard(name="Union Sq", arrivals_by_direction={})]
 
 
 def _patch_clients(monkeypatch) -> None:
-    # gather() constructs the source clients inside the bundled source modules; patch them there.
-    # The llm render runs in pipeline; preview-prompt builds its client in cli.
+    # gather() constructs the source clients inside the bundled source modules; patch them there so
+    # the pillow layout renders offline against fakes.
     monkeypatch.setattr("kindle_dash_gen.sources.builtins.nws.NwsClient", _FakeNwsClient)
     monkeypatch.setattr("kindle_dash_gen.sources.builtins.mta.MtaClient", _FakeMtaClient)
-    monkeypatch.setattr("kindle_dash_gen.pipeline.OpenRouterClient", _FakeOpenRouterClient)
-    monkeypatch.setattr("kindle_dash_gen.cli.OpenRouterClient", _FakeOpenRouterClient)
 
 
-def test_dashboard_render_writes_generated_bytes_to_output_path(tmp_path, monkeypatch) -> None:
+def _assert_png(path: Path, size: tuple[int, int]) -> None:
+    img = Image.open(BytesIO(path.read_bytes()))
+    assert img.size == size
+
+
+def test_dashboard_render_writes_image_to_output_path(tmp_path, monkeypatch) -> None:
     _patch_clients(monkeypatch)
     config_path = _write_config(tmp_path)
     output_path = tmp_path / "out" / "dashboard.png"  # parent dir does not exist yet
@@ -92,7 +78,7 @@ def test_dashboard_render_writes_generated_bytes_to_output_path(tmp_path, monkey
     )
 
     assert result.exit_code == 0, result.output
-    assert output_path.read_bytes() == b"FAKE-PNG-BYTES"
+    _assert_png(output_path, (100, 140))  # the raw layout image at the panel size
 
 
 def test_dashboard_render_renders_all_dashboards_from_one_gather(tmp_path, monkeypatch) -> None:
@@ -111,7 +97,7 @@ def test_dashboard_render_renders_all_dashboards_from_one_gather(tmp_path, monke
     second_path = tmp_path / "out" / "second.png"
     text = (
         CONFIG.replace('path = "./out/dashboard.png"', f'path = "{first_path.as_posix()}"')
-        + f'\n[dashboards.second]\nbackend = "llm"\npath = "{second_path.as_posix()}"\n'
+        + f'\n[dashboards.second]\npath = "{second_path.as_posix()}"\nwidth = 100\nheight = 140\n'
     )
     config_path = tmp_path / "config.toml"
     config_path.write_text(text)
@@ -120,8 +106,8 @@ def test_dashboard_render_renders_all_dashboards_from_one_gather(tmp_path, monke
 
     assert result.exit_code == 0, result.output
     assert gathers["count"] == 1  # single shared fetch
-    assert first_path.read_bytes() == b"FAKE-PNG-BYTES"
-    assert second_path.read_bytes() == b"FAKE-PNG-BYTES"
+    _assert_png(first_path, (100, 140))
+    _assert_png(second_path, (100, 140))
 
 
 def test_dashboard_render_name_selects_a_subset(tmp_path, monkeypatch) -> None:
@@ -132,7 +118,7 @@ def test_dashboard_render_name_selects_a_subset(tmp_path, monkeypatch) -> None:
     second_path = tmp_path / "out" / "second.png"
     text = (
         CONFIG.replace('path = "./out/dashboard.png"', f'path = "{first_path.as_posix()}"')
-        + f'\n[dashboards.second]\nbackend = "llm"\npath = "{second_path.as_posix()}"\n'
+        + f'\n[dashboards.second]\npath = "{second_path.as_posix()}"\nwidth = 100\nheight = 140\n'
     )
     config_path = tmp_path / "config.toml"
     config_path.write_text(text)
@@ -142,7 +128,7 @@ def test_dashboard_render_name_selects_a_subset(tmp_path, monkeypatch) -> None:
     )
 
     assert result.exit_code == 0, result.output
-    assert second_path.read_bytes() == b"FAKE-PNG-BYTES"
+    _assert_png(second_path, (100, 140))
     assert not first_path.exists()  # not named, so not rendered
 
 
@@ -224,7 +210,7 @@ def test_run_one_shot_exits_zero_when_all_sources_down(tmp_path, monkeypatch) ->
 
 
 def _two_dashboard_config(tmp_path: Path) -> Path:
-    text = CONFIG + '\n[dashboards.second]\nbackend = "llm"\npath = "./out/second.png"\n'
+    text = CONFIG + '\n[dashboards.second]\npath = "./out/second.png"\n'
     path = tmp_path / "config.toml"
     path.write_text(text)
     return path
@@ -366,18 +352,3 @@ def test_mta_get_current_prints_arrivals(tmp_path, monkeypatch) -> None:
 def test_mta_get_current_errors_when_mta_not_configured(tmp_path) -> None:
     result = runner.invoke(app, ["--config", str(_write(tmp_path, NWS_ONLY)), "mta", "get-current"])
     assert result.exit_code != 0
-
-
-def test_dashboard_preview_prompt_prints_without_generating(tmp_path, monkeypatch) -> None:
-    _patch_clients(monkeypatch)
-
-    def _no_generate(self, *args, **kwargs):
-        raise AssertionError("preview-prompt must not call generate()")
-
-    monkeypatch.setattr(_FakeOpenRouterClient, "generate", _no_generate)
-    config_path = _write_config(tmp_path)
-
-    result = runner.invoke(app, ["--config", str(config_path), "dashboard", "preview-prompt"])
-
-    assert result.exit_code == 0, result.output
-    assert "4:3" in result.output
