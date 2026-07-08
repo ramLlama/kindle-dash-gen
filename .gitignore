@@ -4,8 +4,9 @@ config.toml
 # Generated dashboard output
 out/
 
-# Claude progress notes
+# Claude progress notes and per-agent scratch memory (not project docs)
 .claude/progress.md
+.claude/agent-memory/
 
 # Python
 __pycache__/
