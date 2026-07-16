@@ -4,6 +4,13 @@ The system is a single linear pipeline that runs once per interval. All orchestr
 `pipeline.py`; the CLI (`cli.py`) is a thin typer wrapper that also exposes each pipeline stage
 as a standalone debug command.
 
+The **fetch path and the pipeline runtime are async**; the **render path is deliberately synchronous
+and sequential**. `gather()`, `run_once()`, and `run()` are coroutines and every source is fetched
+concurrently, but `render`/`render_raw`/`post_process` (and the `Layout.render` protocol) stay plain
+sync and dashboards render one after another. This split is intentional — do not make render async.
+The CLI bridges the boundary with `asyncio.run(...)` at each command (`run`, the `source <name>`
+fetch, and `dashboard render`'s gather); typer commands themselves stay plain sync `def`.
+
 ## Pipeline (pipeline.py)
 
 ```
@@ -26,18 +33,22 @@ run() loop  ──every interval_minutes──▶  run_once(cfg)
 `DashboardData` at the panel size, returning a raw Pillow `Image`. `post_process()` then grayscales,
 fits, and quantizes it into Kindle-ready PNG bytes.
 
-- **`gather()`** iterates the discovered source plugins (`build_sources(cfg.sources)` resolves each
-  `[sources.<name>]` to its plugin class + validated config), constructs and `fetch`es each inside
-  its own try/except, and logs a degradation on `SourceError`. It keys each non-`None` result by
-  `type(result)` into `DashboardData.source_data`; a failed or empty source is simply absent. Two
-  sources producing the same data type is a misconfiguration and raises (fail loud, not degrade).
-- **`run_once()`** gathers once, then renders every `[dashboards.<name>]` from that shared data,
+- **`gather()`** (async) iterates the discovered source plugins (`build_sources(cfg.sources)`
+  resolves each `[sources.<name>]` to its plugin class + validated config), constructs and `fetch`es
+  every source **concurrently** via `asyncio.gather(..., return_exceptions=True)`, then reduces the
+  results **deterministically in `build_sources` order** (not completion order). A source that raises
+  `SourceError` drops its data (logged) and the render proceeds; any other exception is *not*
+  isolated and propagates (fail loud). It keys each non-`None` result by `type(result)` into
+  `DashboardData.source_data`; a failed or empty source is simply absent. Two sources producing the
+  same data type is a misconfiguration and raises (fail loud, not degrade).
+- **`run_once()`** (async) gathers once, then renders every `[dashboards.<name>]` from that shared
+  data,
   each to its own `output_path`. It short-circuits when every source is empty
   (`len(source_data) == 0`): writing a blank dashboard would clobber the last good images, so it
   returns an empty `RunResult` instead. A single dashboard's render/write failure is isolated
   (logged, others proceed) and its
   name collected in `RunResult.failed`, which the `run --one-shot` CLI turns into a non-zero exit.
-- **`run()`** wraps `run_once()` in a `while True` + `time.sleep`. Any unexpected exception
+- **`run()`** (async) wraps `run_once()` in a `while True` + `await asyncio.sleep`. Any unexpected exception
   (i.e. not an isolated per-source or per-dashboard error, both already swallowed) is logged via
   `log.exception` and retried next interval. `KeyboardInterrupt` exits cleanly.
 - Logging is stdlib `logging` configured in the `run` CLI command (INFO, `%H:%M:%S`).
@@ -61,17 +72,19 @@ each bundled source does internally.
 
 The `nws` source (`NwsSource` + `NwsConfig`, in `source.py`) wraps `NwsClient` and produces
 `NwsData` (in `model.py`); `WeatherError` subclasses `SourceError`. The NWS API is multi-step.
-`NwsClient.fetch(lat, lon)`:
+`NwsClient.fetch(lat, lon)` opens a `niquests.AsyncSession` (`async with`) and:
 
 1. `GET /points/{lat},{lon}` (coords rounded to 4 dp — NWS rejects more) → returns per-location
    URLs: `forecast`, `forecastHourly`, `forecastGridData`, `observationStations`, plus a
-   `relativeLocation` used for the display `location_name`.
-2. `GET` the hourly and daily forecast URLs with `?units=si`.
-3. `GET` the gridpoint data → parse the `apparentTemperature` time series (windows of
-   `(start, value)`), used to attach a `feels_like` to each `Temperature`.
-4. `GET` the nearest observation station's latest observation → derive `raining` (keyword scan
-   over `presentWeather`, falling back to the text description) and `observed_conditions`. This
-   is enrichment only: failure returns `(None, None)`, never fails the report.
+   `relativeLocation` used for the display `location_name`. This must complete first (it yields the
+   downstream URLs).
+2. The **four downstream calls run concurrently** (`asyncio.gather`), since they are independent:
+   - `GET` the hourly and daily forecast URLs with `?units=si`.
+   - `GET` the gridpoint data → parse the `apparentTemperature` time series (windows of
+     `(start, value)`), used to attach a `feels_like` to each `Temperature`.
+   - `GET` the nearest observation station's latest observation → derive `raining` (keyword scan
+     over `presentWeather`, falling back to the text description) and `observed_conditions`. This
+     is enrichment only: failure returns `(None, None)`, never fails the report.
 
 **High/Low rollover:** `_high_low` picks today's daytime high and overnight low, but after
 `rollover_hour` (default 20:00 local) it targets the next day. It selects the first daytime/
@@ -91,7 +104,8 @@ in `model.py`); `MtaError` subclasses `SourceError`. `MtaClient(stations).fetch(
 - Each MTA GTFS-realtime feed covers a group of lines (e.g. one feed for N/Q/R/W). Feed URLs
   come from `nyct_gtfs.NYCTFeed._train_to_url` (`_LINE_TO_URL`). The client collects the
   distinct feed URLs across all platforms of all stations and loads each **at most once** per
-  fetch (`_load_feeds`), then reuses them.
+  fetch (`_load_feeds`), then reuses them. The distinct feeds are loaded **concurrently** via
+  `asyncio.gather`.
 - Per platform, it filters trips by `line_id`, `headed_for_stop_id` (the platform stop id with
   `N`/`S` suffixes per its `direction`), and `underway=True`, extracts the predicted arrival at
   the matching stop, and drops arrivals already in the past.
@@ -100,7 +114,8 @@ in `model.py`); `MtaError` subclasses `SourceError`. `MtaClient(stations).fetch(
   decides how many to show (see the Render section).
 - Feed load / parse failures raise `MtaError`. An unknown line id also raises `MtaError`.
 
-`feed_loader` is injectable for tests (defaults to `lambda url: NYCTFeed(url)`).
+`feed_loader` is an injectable async seam for tests (`Callable[[str], Awaitable[NYCTFeed]]`); the
+default builds `NYCTFeed(url, fetch_immediately=False)` then `await feed.refresh_async()`.
 
 ## Render
 

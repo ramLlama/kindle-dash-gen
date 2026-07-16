@@ -1,5 +1,6 @@
 """Tests for the MTA subway source."""
 
+import asyncio
 from datetime import datetime, timedelta
 
 import pytest
@@ -66,7 +67,7 @@ def _station(platforms: list[Platform] | None = None) -> Station:
 def _loader_for(trips: list[FakeTrip]):
     calls: list[str] = []
 
-    def loader(url: str) -> FakeFeed:
+    async def loader(url: str) -> FakeFeed:
         calls.append(url)
         return FakeFeed(trips)
 
@@ -77,6 +78,11 @@ def _minutes(arrivals) -> list[int]:
     return [round((a.arrival - NOW).total_seconds() / 60) for a in arrivals]
 
 
+def _fetch(stations, loader):
+    """Build the client and drive its async fetch to completion (tests stay sync)."""
+    return asyncio.run(MtaClient(stations, feed_loader=loader).fetch(now=NOW))
+
+
 def test_arrivals_grouped_and_sorted_per_direction() -> None:
     trips = [
         _trip("Q", "N", "96 St", "R20N", 7),
@@ -85,7 +91,7 @@ def test_arrivals_grouped_and_sorted_per_direction() -> None:
         _trip("R", "S", "Bay Ridge", "R20S", 5),
     ]
     loader, _ = _loader_for(trips)
-    boards = MtaClient({"Union Sq": _station()}, feed_loader=loader).fetch(now=NOW)
+    boards = _fetch({"Union Sq": _station()}, loader)
 
     board = boards[0]
     assert board.name == "Union Sq"
@@ -99,14 +105,14 @@ def test_display_name_carried_onto_board() -> None:
     # A station's optional display_name flows to the board's `label`; `name` stays canonical.
     loader, _ = _loader_for([])
     station = Station(display_name="59 St - CC", platforms=[_platform()])
-    board = MtaClient({"59 St-Columbus Circle": station}, feed_loader=loader).fetch(now=NOW)[0]
+    board = _fetch({"59 St-Columbus Circle": station}, loader)[0]
     assert board.name == "59 St-Columbus Circle"  # match key unchanged
     assert board.label == "59 St - CC"
 
 
 def test_label_falls_back_to_name_without_display_name() -> None:
     loader, _ = _loader_for([])
-    board = MtaClient({"Union Sq": _station()}, feed_loader=loader).fetch(now=NOW)[0]
+    board = _fetch({"Union Sq": _station()}, loader)[0]
     assert board.display_name is None
     assert board.label == "Union Sq"
 
@@ -118,7 +124,7 @@ def test_platforms_merge_within_direction() -> None:
     ]
     loader, calls = _loader_for(trips)
     platforms = [_platform(), _platform(lines=["L"], stop_id="L03")]
-    boards = MtaClient({"Union Sq": _station(platforms)}, feed_loader=loader).fetch(now=NOW)
+    boards = _fetch({"Union Sq": _station(platforms)}, loader)
 
     assert len(boards) == 1
     assert boards[0].name == "Union Sq"
@@ -138,7 +144,7 @@ def test_platforms_merge_fully_without_truncation() -> None:
     loader, _ = _loader_for(trips)
     platforms = [_platform(), _platform(lines=["L"], stop_id="L03")]
     stations = {"Union Sq": _station(platforms)}
-    boards = MtaClient(stations, feed_loader=loader).fetch(now=NOW)
+    boards = _fetch(stations, loader)
     # Merged, sorted N = [2, 3, 5, 7]; nothing dropped at fetch.
     assert _minutes(boards[0].arrivals_by_direction["N"]) == [2, 3, 5, 7]
 
@@ -149,7 +155,7 @@ def test_past_arrivals_excluded() -> None:
         _trip("Q", "N", "96 St", "R20N", 4),
     ]
     loader, _ = _loader_for(trips)
-    boards = MtaClient({"Union Sq": _station()}, feed_loader=loader).fetch(now=NOW)
+    boards = _fetch({"Union Sq": _station()}, loader)
     assert _minutes(boards[0].arrivals_by_direction["N"]) == [4]
 
 
@@ -160,14 +166,14 @@ def test_direction_north_only_targets_north_stop() -> None:
     ]
     loader, _ = _loader_for(trips)
     stations = {"Union Sq": _station([_platform(direction="north")])}
-    boards = MtaClient(stations, feed_loader=loader).fetch(now=NOW)
+    boards = _fetch(stations, loader)
     assert list(boards[0].arrivals_by_direction.keys()) == [Direction.NORTH]
 
 
 def test_each_feed_loaded_once() -> None:
     # N/Q/R/W all share one feed URL, so only one feed should be loaded.
     loader, calls = _loader_for([])
-    MtaClient({"Union Sq": _station()}, feed_loader=loader).fetch(now=NOW)
+    _fetch({"Union Sq": _station()}, loader)
     assert len(calls) == 1
 
 
@@ -175,7 +181,7 @@ def test_unknown_line_raises() -> None:
     loader, _ = _loader_for([])
     stations = {"Nowhere": _station([_platform(lines=["ZZ"])])}
     with pytest.raises(MtaError):
-        MtaClient(stations, feed_loader=loader).fetch(now=NOW)
+        _fetch(stations, loader)
 
 
 def test_mta_data_wraps_station_boards() -> None:

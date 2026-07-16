@@ -30,7 +30,7 @@ class _DemoSource:
     def __init__(self, config: _DemoConfig) -> None:
         self.config = config
 
-    def fetch(self, now: datetime) -> _DemoConfig:
+    async def fetch(self, now: datetime) -> _DemoConfig:
         return self.config
 
 

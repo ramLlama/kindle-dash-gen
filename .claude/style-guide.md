@@ -41,8 +41,9 @@ live in `pyproject.toml` (`[tool.ruff]`).
   invariant (e.g. "all data is SI; callers round for display").
 - Keyword-only params (`*,`) for multi-arg render/pipeline functions to keep call sites
   self-documenting (`post_process(image, *, width, height, gray_levels, method, rotate)`).
-- Inject collaborators for testability with a defaulted optional param
-  (`session: niquests.Session | None = None`, `feed_loader: FeedLoader | None = None`).
+- Inject collaborators for testability with a defaulted optional param (e.g. `MtaClient`'s async
+  `feed_loader: FeedLoader | None = None`). HTTP clients that open their own `niquests.AsyncSession`
+  (e.g. `NwsClient`) are instead mocked at the HTTP layer with `niquests-mock`.
 
 ## Comments
 

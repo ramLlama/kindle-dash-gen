@@ -14,7 +14,8 @@ for syncing to the device. Intended to run unattended on an interval (e.g. every
 - **uv** for env/deps. The project is `package = false` — run in place, never installed.
 - **typer** `0.26.*` — CLI framework
 - **pydantic** `2.*` — config validation (`extra="forbid"` on every model)
-- **niquests** `3.*` — HTTP client (NWS); `niquests-mock` in tests
+- **niquests** `3.*` — HTTP client (NWS; uses `AsyncSession` for concurrent fetches);
+  `niquests-mock` in tests
 - **nyct-gtfs** `2.*` — MTA GTFS-realtime feed parsing
 - **pillow** `12.*` — the rendering layout and image post-processing
 - **fontconfig** (`fc-match`, system tool) — a layout resolves a font family name to a file;
@@ -83,15 +84,19 @@ docs/sources.md        # how to write a data-source plugin (the public contract)
 
 ## Architecture Overview
 
-Linear pipeline, wired in `pipeline.py`:
-`gather()` (iterate the discovered source plugins **once**, isolating each) → for each configured
-`[dashboards.<name>]`: `render_raw()` (`layout.render()` builds the dashboard's layout from its
-`layout_config` and draws `DashboardData` at native size, returning a raw Pillow `Image`) →
-`post_process()` (grayscale, fit, quantize — takes the `Image`, returns PNG bytes) → atomic write
-to the dashboard's `output_path`. `run_once()` returns a `RunResult(written, failed)`; one
-dashboard's render failure is isolated (logged, others proceed). The fit step is effectively a
-no-op since the layout already draws at exact size, so only quantization matters. The `dashboard`
-CLI subcommands expose each step in isolation for debugging.
+Linear pipeline, wired in `pipeline.py`. The **fetch path is async**; the **render path stays
+synchronous and sequential by design**. `gather()` (async — fetches every discovered source
+**concurrently** via `asyncio.gather`, then reduces in `build_sources` order, isolating each) → for
+each configured `[dashboards.<name>]`, rendered **sequentially**: `render_raw()` (`layout.render()`
+builds the dashboard's layout from its `layout_config` and draws `DashboardData` at native size,
+returning a raw Pillow `Image`) → `post_process()` (grayscale, fit, quantize — takes the `Image`,
+returns PNG bytes) → atomic write to the dashboard's `output_path`. `run_once()` (async) returns a
+`RunResult(written, failed)`; one dashboard's render failure is isolated (logged, others proceed).
+`render`/`render_raw`/`post_process` and the `Layout.render` protocol are **not** async — that split
+is deliberate. The CLI bridges with `asyncio.run(...)` at each command boundary; typer commands stay
+plain sync `def`. The fit step is effectively a no-op since the layout already draws at exact size,
+so only quantization matters. The `dashboard` CLI subcommands expose each step in isolation for
+debugging.
 
 See [architecture.md](architecture.md) for data flow, the NWS multi-step fetch, MTA feed
 deduplication, and the layout/post-process details.
@@ -142,8 +147,9 @@ subcommand loads it on demand via `_config(ctx)`.
     `load_asset_image`, `LayoutError`). See `docs/plugins.md`.
   - **Sources** register via `register_source` at import, bundled root
     `kindle_dash_gen.sources.builtins` (the `nws` and `mta` sources). A source is a `Source`
-    protocol class with a `Config` and a `fetch(now)`; `build_sources` validates each
-    `[sources.<name>]` table. A source may also define an optional `cli(cls) -> typer.Typer` for
+    protocol class with a `Config` and an **async** `fetch(now)` (`async def fetch(self, now) -> Any`)
+    so the pipeline can fetch every source concurrently — `await` I/O inside it (e.g.
+    `niquests.AsyncSession`); `build_sources` validates each `[sources.<name>]` table. A source may also define an optional `cli(cls) -> typer.Typer` for
     source-specific CLI verbs (the `mta` source ships `source mta list-stations`). Build on
     `sources/toolkit.py` (`SourceError`). See `docs/sources.md`.
 - **The `source` CLI subcommands are wired ahead of parsing.** typer has no native dynamic
@@ -161,10 +167,12 @@ subcommand loads it on demand via `_config(ctx)`.
   wired at import); the local-source test calls `_wire_source_commands()` explicitly.
 
   Do **not** re-add a hardcoded builtin dict for either kind.
-- **Per-source isolation.** In `gather()`, each source's `SourceError` (subclasses: `WeatherError`,
-  `MtaError`) drops just that source's data (logged) and the render proceeds with whatever remains.
-  Only `SourceError` is swallowed; two sources producing the same data type is a misconfiguration
-  and fails loud. If *every* source is empty (`len(source_data) == 0`), `run_once()` skips the
+- **Per-source isolation.** `gather()` fetches all sources concurrently
+  (`asyncio.gather(..., return_exceptions=True)`) then reduces the results deterministically in
+  `build_sources` order. Each source's `SourceError` (subclasses: `WeatherError`, `MtaError`) drops
+  just that source's data (logged) and the render proceeds with whatever remains. Only `SourceError`
+  is swallowed; any other exception propagates (fail loud), and two sources producing the same data
+  type is a misconfiguration and fails loud. If *every* source is empty (`len(source_data) == 0`), `run_once()` skips the
   render entirely so it never spends a paid generation or clobbers the last good image.
 - **Atomic writes.** Output is written to a `.tmp` sibling then `Path.replace`d, so a crash
   mid-write leaves the previous PNG intact. Keep this when touching the write path.

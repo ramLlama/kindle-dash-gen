@@ -8,8 +8,8 @@ transient outage never kills the runner.
 
 from __future__ import annotations
 
+import asyncio
 import logging
-import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -27,24 +27,35 @@ from .sources.registry import SourceError, build_sources
 log = logging.getLogger(__name__)
 
 
-def gather(cfg: Config) -> DashboardData:
-    """Fetch every configured source for one render, isolating each.
+async def gather(cfg: Config) -> DashboardData:
+    """Fetch every configured source for one render, concurrently, isolating each.
 
     Sources are discovered plugins: each ``[sources.<name>]`` is validated, constructed, and
-    fetched. A source that raises a :class:`SourceError` drops its data (logged) and the render
-    proceeds with whatever else was gathered. The result keys each produced data class to its
-    instance (see :class:`DashboardData`); a failed or empty source is simply absent.
+    fetched. All fetches run concurrently (``asyncio.gather``); results are then reduced in
+    ``build_sources`` order so the outcome is deterministic regardless of completion order. A source
+    that raises a :class:`SourceError` drops its data (logged) and the render proceeds with whatever
+    else was gathered; any other exception is not isolated and propagates. The result keys each
+    produced data class to its instance (see :class:`DashboardData`); a failed or empty source is
+    simply absent.
     """
     # Discover local (plugins_path) sources too, not just the bundled ones build_sources loads.
     plugins.load_plugins(cfg.plugins_path)
     now = datetime.now()
+    resolved = build_sources(cfg.sources)
+    names = list(resolved)
+    results = await asyncio.gather(
+        *(source_cls(source_cfg).fetch(now) for source_cls, source_cfg in resolved.values()),
+        return_exceptions=True,
+    )
+
     source_data: dict[type, Any] = {}
-    for name, (source_cls, source_cfg) in build_sources(cfg.sources).items():
-        try:
-            result = source_cls(source_cfg).fetch(now)
-        except SourceError as exc:
-            log.warning("source %r unavailable (%s); omitting its data", name, exc)
+    # Deterministic reduce: iterate in build_sources order, not completion order.
+    for name, result in zip(names, results, strict=True):
+        if isinstance(result, SourceError):
+            log.warning("source %r unavailable (%s); omitting its data", name, result)
             continue
+        if isinstance(result, BaseException):
+            raise result  # only SourceError is isolated; anything else is a real bug — fail loud
         if result is not None:
             # source_data is keyed by produced type, so two sources producing the same class would
             # silently clobber. That's a misconfiguration, not a degraded source, so fail loud.
@@ -109,7 +120,7 @@ class RunResult:
     failed: list[str]  # names of dashboards whose render/write raised
 
 
-def run_once(cfg: Config) -> RunResult:
+async def run_once(cfg: Config) -> RunResult:
     """Gather once, then render and write every configured dashboard; report the outcome.
 
     Data is fetched a single time and shared across all dashboards. If every source failed (empty
@@ -120,7 +131,7 @@ def run_once(cfg: Config) -> RunResult:
     failed names are returned so a one-shot caller can exit non-zero.
     """
     log.info("dashboard render starting for %d dashboard(s)", len(cfg.dashboards))
-    data = gather(cfg)
+    data = await gather(cfg)
     if len(data.source_data) == 0:
         log.warning("all sources unavailable; keeping the last dashboard image(s)")
         return RunResult(written=[], failed=[])
@@ -150,7 +161,7 @@ def _atomic_write(path: Path, data: bytes) -> None:
     tmp.replace(path)
 
 
-def run(cfg: Config) -> None:
+async def run(cfg: Config) -> None:
     """Regenerate the dashboard every ``interval_minutes`` until interrupted.
 
     A failed iteration is logged and retried at the next interval; Ctrl-C exits cleanly.
@@ -162,9 +173,9 @@ def run(cfg: Config) -> None:
     try:
         while True:
             try:
-                run_once(cfg)
+                await run_once(cfg)
             except Exception:  # any source/render failure — keep the loop alive
                 log.exception("dashboard render failed; retrying next interval")
-            time.sleep(interval)
+            await asyncio.sleep(interval)
     except KeyboardInterrupt:
         log.info("stopping dashboard loop")

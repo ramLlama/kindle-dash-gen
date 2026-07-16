@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 from datetime import datetime
@@ -120,11 +121,11 @@ def run_dashboard(
         # Surface render failures to the exit code so a cron/systemd one-shot doesn't report
         # success when a dashboard silently failed. "All sources down" is a legitimate skip (no
         # failures), so it still exits 0. The loop, by contrast, just retries next interval.
-        result = pipeline.run_once(cfg)
+        result = asyncio.run(pipeline.run_once(cfg))
         if len(result.failed) > 0:
             raise typer.Exit(code=1)
     else:
-        pipeline.run(cfg)
+        asyncio.run(pipeline.run(cfg))
 
 
 def _discover_sources(ctx: typer.Context) -> Config:
@@ -195,7 +196,7 @@ def _print_source_fetch(ctx: typer.Context, name: str) -> None:
         )
     source_cls, source_cfg = build_sources({name: cfg.sources[name]})[name]
     try:
-        result = source_cls(source_cfg).fetch(datetime.now())
+        result = asyncio.run(source_cls(source_cfg).fetch(datetime.now()))
     except SourceError as exc:
         # A fetch failure is expected (source unavailable); report it cleanly, not as a traceback.
         raise typer.BadParameter(f"source {name!r} failed: {exc}") from exc
@@ -225,7 +226,7 @@ def dashboard_render(
     selected = _selected_dashboards(cfg, names)
     if output_file is not None and len(selected) > 1:
         raise typer.BadParameter("output_file writes one dashboard; pass a single --name")
-    data = pipeline.gather(cfg)  # one fetch, shared across all rendered dashboards
+    data = asyncio.run(pipeline.gather(cfg))  # one fetch, shared across all rendered dashboards
     for dash in selected.values():
         image = pipeline.render_raw(cfg, data, dash)
         path = output_file or dash.output_path

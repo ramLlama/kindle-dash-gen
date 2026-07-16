@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from io import BytesIO
 from types import SimpleNamespace
 
+import pytest
 from PIL import Image
 
 from kindle_dash_gen import pipeline
@@ -15,6 +17,7 @@ from kindle_dash_gen.sources.builtins.mta.source import MtaError
 from kindle_dash_gen.sources.builtins.nws import source as nws_mod
 from kindle_dash_gen.sources.builtins.nws.model import NwsData
 from kindle_dash_gen.sources.builtins.nws.source import WeatherError
+from kindle_dash_gen.sources.registry import SourceError
 
 CONFIG: dict = {
     "sources": {
@@ -43,7 +46,7 @@ class _FakeMtaClient:
     def __init__(self, *args, **kwargs) -> None:
         pass
 
-    def fetch(self, now=None):
+    async def fetch(self, now=None):
         return []
 
 
@@ -53,7 +56,7 @@ class _FakeMtaClientWithBoard:
     def __init__(self, *args, **kwargs) -> None:
         pass
 
-    def fetch(self, now=None):
+    async def fetch(self, now=None):
         return [StationBoard(name="Union Sq", arrivals_by_direction={})]
 
 
@@ -61,7 +64,7 @@ class _FailingMtaClient:
     def __init__(self, *args, **kwargs) -> None:
         pass
 
-    def fetch(self, now=None):
+    async def fetch(self, now=None):
         raise MtaError("feed down")
 
 
@@ -72,7 +75,7 @@ def _fake_nws(returns=None, raises=None):
         def __init__(self, *args, **kwargs) -> None:
             pass
 
-        def fetch(self, lat, lon):
+        async def fetch(self, lat, lon):
             if raises is not None:
                 raise raises
             return returns
@@ -89,7 +92,7 @@ def test_gather_isolates_weather_failure(monkeypatch) -> None:
     monkeypatch.setattr(nws_mod, "NwsClient", _fake_nws(raises=WeatherError("down")))
     monkeypatch.setattr(mta_mod, "MtaClient", _FakeMtaClient)
 
-    data = pipeline.gather(Config.model_validate(CONFIG))
+    data = asyncio.run(pipeline.gather(Config.model_validate(CONFIG)))
 
     assert NwsData not in data.source_data  # weather dropped, render still proceeds
     assert data.source_data[MtaData].boards == []  # subway present (empty), render proceeds
@@ -100,7 +103,7 @@ def test_gather_isolates_subway_failure(monkeypatch) -> None:
     monkeypatch.setattr(nws_mod, "NwsClient", _fake_nws(returns=sentinel))
     monkeypatch.setattr(mta_mod, "MtaClient", _FailingMtaClient)
 
-    data = pipeline.gather(Config.model_validate(CONFIG))
+    data = asyncio.run(pipeline.gather(Config.model_validate(CONFIG)))
 
     assert data.source_data[type(sentinel)] is sentinel  # weather survives a subway outage
     assert MtaData not in data.source_data  # subway dropped
@@ -112,9 +115,31 @@ def test_gather_keys_source_data_by_produced_type(monkeypatch) -> None:
     monkeypatch.setattr(nws_mod, "NwsClient", _fake_nws(returns=weather))
     monkeypatch.setattr(mta_mod, "MtaClient", _FakeMtaClientWithBoard)
 
-    data = pipeline.gather(Config.model_validate(CONFIG))
+    data = asyncio.run(pipeline.gather(Config.model_validate(CONFIG)))
 
     assert set(data.source_data) == {type(weather), MtaData}
+
+
+def test_gather_fails_loud_on_non_source_error(monkeypatch) -> None:
+    # Only SourceError is isolated; any other exception a fetch raises must escape the concurrent
+    # gather (return_exceptions=True captures it, but the reduce re-raises non-SourceError), so a
+    # real bug fails loud instead of masquerading as a degraded source.
+    monkeypatch.setattr(nws_mod, "NwsClient", _fake_nws(raises=ValueError("boom")))
+    monkeypatch.setattr(mta_mod, "MtaClient", _FakeMtaClient)
+
+    with pytest.raises(ValueError):
+        asyncio.run(pipeline.gather(Config.model_validate(CONFIG)))
+
+
+def test_gather_rejects_two_sources_producing_the_same_type(monkeypatch) -> None:
+    # source_data is keyed by produced type, so two sources yielding the same class would clobber.
+    # That's a misconfiguration, not a degraded source: the reduce fails loud rather than pick one.
+    # Here the nws fake is coerced to produce an MtaData, colliding with the mta source's MtaData.
+    monkeypatch.setattr(nws_mod, "NwsClient", _fake_nws(returns=MtaData(boards=[])))
+    monkeypatch.setattr(mta_mod, "MtaClient", _FakeMtaClientWithBoard)
+
+    with pytest.raises(SourceError):
+        asyncio.run(pipeline.gather(Config.model_validate(CONFIG)))
 
 
 def test_run_once_writes_kindle_ready_image(tmp_path, monkeypatch) -> None:
@@ -122,7 +147,7 @@ def test_run_once_writes_kindle_ready_image(tmp_path, monkeypatch) -> None:
     _patch_render_sources(monkeypatch)
     cfg = _config(tmp_path)
 
-    result = pipeline.run_once(cfg)
+    result = asyncio.run(pipeline.run_once(cfg))
 
     assert result.written == [cfg.dashboards["main"].output_path]
     assert result.failed == []
@@ -149,7 +174,7 @@ def test_run_once_renders_every_dashboard_from_one_gather(tmp_path, monkeypatch)
         update={"output_path": tmp_path / "out" / "wide.png", "width": 160, "height": 90}
     )
 
-    result = pipeline.run_once(cfg)
+    result = asyncio.run(pipeline.run_once(cfg))
 
     assert gathers["count"] == 1  # data fetched exactly once, shared across dashboards
     assert set(result.written) == {
@@ -163,19 +188,19 @@ def test_run_once_renders_every_dashboard_from_one_gather(tmp_path, monkeypatch)
 def test_run_loops_until_interrupted(monkeypatch) -> None:
     calls = {"count": 0}
 
-    def _run_once(cfg):
+    async def _run_once(cfg):
         calls["count"] += 1
 
     # Let three iterations complete, then interrupt from within sleep to exit the loop.
-    def _sleep(seconds):
+    async def _sleep(seconds):
         if calls["count"] >= 3:
             raise KeyboardInterrupt
         return None
 
     monkeypatch.setattr(pipeline, "run_once", _run_once)
-    monkeypatch.setattr(pipeline.time, "sleep", _sleep)
+    monkeypatch.setattr(pipeline.asyncio, "sleep", _sleep)
 
-    pipeline.run(Config.model_validate(CONFIG))  # returns cleanly on KeyboardInterrupt
+    asyncio.run(pipeline.run(Config.model_validate(CONFIG)))  # returns cleanly on KeyboardInterrupt
 
     assert calls["count"] == 3
 
@@ -183,19 +208,19 @@ def test_run_loops_until_interrupted(monkeypatch) -> None:
 def test_run_continues_after_iteration_failure(monkeypatch) -> None:
     calls = {"count": 0}
 
-    def _run_once(cfg):
+    async def _run_once(cfg):
         calls["count"] += 1
         if calls["count"] == 1:
             raise RuntimeError("transient render failure")
 
-    def _sleep(seconds):
+    async def _sleep(seconds):
         if calls["count"] >= 2:
             raise KeyboardInterrupt
 
     monkeypatch.setattr(pipeline, "run_once", _run_once)
-    monkeypatch.setattr(pipeline.time, "sleep", _sleep)
+    monkeypatch.setattr(pipeline.asyncio, "sleep", _sleep)
 
-    pipeline.run(Config.model_validate(CONFIG))  # first iteration raises but loop survives
+    asyncio.run(pipeline.run(Config.model_validate(CONFIG)))  # first iter raises, loop survives
 
     assert calls["count"] == 2  # retried after the failure
 
@@ -214,7 +239,7 @@ def test_run_once_isolates_a_failing_dashboard(tmp_path, monkeypatch) -> None:
         update={"output_path": tmp_path / "out" / "broken.png", "layout": "does-not-exist"}
     )
 
-    result = pipeline.run_once(cfg)  # does not raise
+    result = asyncio.run(pipeline.run_once(cfg))  # does not raise
 
     assert result.written == [
         cfg.dashboards["main"].output_path
@@ -239,7 +264,7 @@ def test_run_once_skips_render_when_all_sources_down(tmp_path, monkeypatch) -> N
     path.parent.mkdir(parents=True)
     path.write_bytes(b"PREVIOUS-IMAGE")  # a prior good dashboard
 
-    result = pipeline.run_once(cfg)
+    result = asyncio.run(pipeline.run_once(cfg))
 
     assert result.written == []  # signals "nothing written"
     assert result.failed == []  # skipped, not failed — a one-shot should still exit 0

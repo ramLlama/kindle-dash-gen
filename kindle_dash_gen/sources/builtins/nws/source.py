@@ -8,6 +8,7 @@ display. The produced data type lives in :mod:`.model`.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import Callable
 from datetime import date, datetime, timedelta
@@ -49,27 +50,42 @@ class NwsClient:
         user_agent: str,
         rollover_hour: int = 20,
         hourly_hours: int = 4,
-        session: niquests.Session | None = None,
     ) -> None:
+        self._user_agent = user_agent
         self._rollover_hour = rollover_hour
         self._hourly_hours = hourly_hours
-        self._session = session or niquests.Session()
-        # NWS requires a User-Agent identifying the caller.
-        self._session.headers["User-Agent"] = user_agent
-        self._session.headers["Accept"] = "application/geo+json"
 
-    def _get_json(self, url: str, params: dict[str, str] | None = None) -> dict:
+    async def _get_json(
+        self,
+        session: niquests.AsyncSession,
+        url: str,
+        params: dict[str, str] | None = None,
+    ) -> dict:
         try:
-            resp = self._session.get(url, params=params, timeout=30)
+            resp = await session.get(url, params=params, timeout=30)
             resp.raise_for_status()
             return resp.json()
         except niquests.exceptions.RequestException as exc:
             raise WeatherError(f"NWS request failed: {url}") from exc
 
-    def fetch(self, lat: float, lon: float) -> NwsData:
-        """Fetch current conditions and the near-term forecast for a location (SI)."""
+    async def fetch(self, lat: float, lon: float) -> NwsData:
+        """Fetch current conditions and the near-term forecast for a location (SI).
+
+        NWS is a multi-step API: the ``/points`` lookup must complete first (it yields the per-
+        location URLs), then the four independent downstream calls — hourly, daily, the apparent-
+        temperature grid, and the latest observation — are fetched concurrently.
+        """
+        # NWS requires a User-Agent identifying the caller.
+        async with niquests.AsyncSession() as session:
+            session.headers["User-Agent"] = self._user_agent
+            session.headers["Accept"] = "application/geo+json"
+            return await self._fetch(session, lat, lon)
+
+    async def _fetch(self, session: niquests.AsyncSession, lat: float, lon: float) -> NwsData:
         # NWS rejects coordinates with more than 4 decimal places.
-        point = self._get_json(f"{NWS_API}/points/{round(lat, 4):.4f},{round(lon, 4):.4f}")
+        point = await self._get_json(
+            session, f"{NWS_API}/points/{round(lat, 4):.4f},{round(lon, 4):.4f}"
+        )
         try:
             props = point["properties"]
             forecast_url = props["forecast"]
@@ -83,9 +99,13 @@ class NwsClient:
             raise WeatherError("unexpected NWS /points response") from exc
 
         params = {"units": "si"}
-        hourly = self._get_json(hourly_url, params)
-        daily = self._get_json(forecast_url, params)
-        apparent = self._apparent_series(grid_url)
+        # The four downstream calls are independent, so fetch them concurrently.
+        hourly, daily, apparent, (raining, observed) = await asyncio.gather(
+            self._get_json(session, hourly_url, params),
+            self._get_json(session, forecast_url, params),
+            self._apparent_series(session, grid_url),
+            self._observation(session, stations_url),
+        )
 
         try:
             hourly_periods = hourly["properties"]["periods"]
@@ -98,7 +118,6 @@ class NwsClient:
             high, low, high_low_date = self._high_low(
                 daily_periods, datetime.now(as_of.tzinfo), apparent
             )
-            raining, observed = self._observation(stations_url)
             return NwsData(
                 temperature=Temperature(now["temperature"], _apparent_at(apparent, as_of)),
                 conditions=now["shortForecast"],
@@ -158,10 +177,13 @@ class NwsClient:
             )
         return result
 
-    def _apparent_series(self, grid_url: str) -> ApparentSeries:
+    async def _apparent_series(
+        self, session: niquests.AsyncSession, grid_url: str
+    ) -> ApparentSeries:
         """Parse the gridpoint apparent-temperature time series, or [] if unavailable."""
         try:
-            values = self._get_json(grid_url)["properties"]["apparentTemperature"]["values"]
+            grid = await self._get_json(session, grid_url)
+            values = grid["properties"]["apparentTemperature"]["values"]
         except _APPARENT_SWALLOW:
             return []
         series: ApparentSeries = []
@@ -175,17 +197,20 @@ class NwsClient:
         series.sort(key=lambda item: item[0])
         return series
 
-    def _observation(self, stations_url: str) -> tuple[bool | None, str | None]:
+    async def _observation(
+        self, session: niquests.AsyncSession, stations_url: str
+    ) -> tuple[bool | None, str | None]:
         """(is-raining, text description) from the nearest station's latest observation.
 
         Returns (None, None) if the observation cannot be retrieved — it is an enrichment
         and should not fail the whole report.
         """
         try:
-            stations = self._get_json(stations_url)["features"]
+            stations = (await self._get_json(session, stations_url))["features"]
             if len(stations) == 0:
                 return None, None
-            obs = self._get_json(f"{stations[0]['id']}/observations/latest")["properties"]
+            latest = await self._get_json(session, f"{stations[0]['id']}/observations/latest")
+            obs = latest["properties"]
         except _OBSERVATION_SWALLOW:
             return None, None
         text = obs.get("textDescription")
@@ -281,5 +306,5 @@ class NwsSource(Source[NwsConfig]):
         self._config = config
         self._client = NwsClient(config.user_agent, config.rollover_hour, config.hourly_hours)
 
-    def fetch(self, now: datetime) -> NwsData:
-        return self._client.fetch(self._config.latitude, self._config.longitude)
+    async def fetch(self, now: datetime) -> NwsData:
+        return await self._client.fetch(self._config.latitude, self._config.longitude)

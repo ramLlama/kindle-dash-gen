@@ -9,9 +9,10 @@ central config. The produced data type lives in :mod:`.model`.
 
 from __future__ import annotations
 
+import asyncio
 import csv
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from importlib.resources import files
 from typing import Literal
@@ -42,7 +43,16 @@ _DIRECTION_SUFFIXES = {
     "both": (Direction.NORTH, Direction.SOUTH),
 }
 
-FeedLoader = Callable[[str], "NYCTFeed"]
+# Loads one feed by URL. Async so a station's distinct feeds can be fetched concurrently; the
+# default loader builds the feed without fetching, then awaits nyct-gtfs's async refresh.
+FeedLoader = Callable[[str], Awaitable["NYCTFeed"]]
+
+
+async def _default_feed_loader(url: str) -> NYCTFeed:
+    """Build a feed without an immediate (blocking) fetch, then refresh it asynchronously."""
+    feed = NYCTFeed(url, fetch_immediately=False)
+    await feed.refresh_async()
+    return feed
 
 
 class Platform(BaseModel):
@@ -81,25 +91,28 @@ class MtaClient:
 
     def __init__(self, stations: dict[str, Station], feed_loader: FeedLoader | None = None) -> None:
         self._stations = stations
-        self._feed_loader = feed_loader or (lambda url: NYCTFeed(url))
+        self._feed_loader = feed_loader or _default_feed_loader
 
-    def fetch(self, now: datetime | None = None) -> list[StationBoard]:
+    async def fetch(self, now: datetime | None = None) -> list[StationBoard]:
         """Load every needed feed once and build a board for each station name."""
         now = now or datetime.now()
-        feeds = self._load_feeds()
+        feeds = await self._load_feeds()
         return [self._board(name, station, feeds, now) for name, station in self._stations.items()]
 
-    def _load_feeds(self) -> dict[str, NYCTFeed]:
-        urls = {
-            url
-            for station in self._stations.values()
-            for platform in station.platforms
-            for url in _feed_urls(platform)
-        }
+    async def _load_feeds(self) -> dict[str, NYCTFeed]:
+        urls = [
+            *{
+                url
+                for station in self._stations.values()
+                for platform in station.platforms
+                for url in _feed_urls(platform)
+            }
+        ]
         try:
-            return {url: self._feed_loader(url) for url in urls}
+            feeds = await asyncio.gather(*(self._feed_loader(url) for url in urls))
         except Exception as exc:  # network / protobuf-parse failures from nyct-gtfs
             raise MtaError("failed to load MTA feed") from exc
+        return dict(zip(urls, feeds, strict=True))
 
     def _board(
         self, name: str, station: Station, feeds: dict[str, NYCTFeed], now: datetime
@@ -186,8 +199,8 @@ class MtaSource(Source[MtaConfig]):
     def __init__(self, config: MtaConfig) -> None:
         self._client = MtaClient(config.stations)
 
-    def fetch(self, now: datetime) -> MtaData:
-        return MtaData(boards=self._client.fetch(now))
+    async def fetch(self, now: datetime) -> MtaData:
+        return MtaData(boards=await self._client.fetch(now))
 
     @classmethod
     def cli(cls) -> typer.Typer:

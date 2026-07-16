@@ -1,5 +1,6 @@
 """Tests for the NWS weather source."""
 
+import asyncio
 from datetime import datetime
 
 import niquests_mock as nm
@@ -126,7 +127,7 @@ def _client() -> NwsClient:
 def test_fetch_parses_core_fields() -> None:
     with nm.mock(assert_all_called=False) as router:
         _route_all(router)
-        r = _client().fetch(LAT, LON)
+        r = asyncio.run(_client().fetch(LAT, LON))
 
     assert r.temperature.real == 31
     assert r.temperature.feels_like == 40.6  # raw float, not rounded
@@ -143,7 +144,7 @@ def test_fetch_parses_core_fields() -> None:
 def test_upcoming_hours_excludes_current_hour() -> None:
     with nm.mock(assert_all_called=False) as router:
         _route_all(router)
-        r = _client().fetch(LAT, LON)
+        r = asyncio.run(_client().fetch(LAT, LON))
     # hourly_hours defaults to 4; the current hour (14:00) is excluded.
     assert [h.time.hour for h in r.hourly] == [15, 16, 17, 18]
     assert [h.temperature.real for h in r.hourly] == [32, 33, 32, 30]
@@ -154,7 +155,7 @@ def test_upcoming_hours_excludes_current_hour() -> None:
 def test_raining_from_present_weather() -> None:
     with nm.mock(assert_all_called=False) as router:
         _route_all(router, obs=_obs([{"weather": "rain"}], "Light Rain"))
-        r = _client().fetch(LAT, LON)
+        r = asyncio.run(_client().fetch(LAT, LON))
     assert r.raining is True
     assert r.observed_conditions == "Light Rain"
 
@@ -162,7 +163,7 @@ def test_raining_from_present_weather() -> None:
 def test_not_raining_when_clear() -> None:
     with nm.mock(assert_all_called=False) as router:
         _route_all(router, obs=_obs([], "Clear"))
-        r = _client().fetch(LAT, LON)
+        r = asyncio.run(_client().fetch(LAT, LON))
     assert r.raining is False
 
 
@@ -173,7 +174,7 @@ def test_observation_failure_degrades_gracefully() -> None:
         router.get(FORECAST_URL, params={"units": "si"}).respond(json=FORECAST)
         router.get(GRID_URL).respond(json=GRID)
         router.get(STATIONS_URL).respond(status_code=500)  # observation unavailable
-        r = _client().fetch(LAT, LON)
+        r = asyncio.run(_client().fetch(LAT, LON))
     assert r.raining is None
     assert r.observed_conditions is None
     assert r.temperature.real == 31  # core report still produced
@@ -210,7 +211,7 @@ def test_http_error_raises_weather_error() -> None:
     with nm.mock(assert_all_called=False) as router:
         router.get(POINTS_URL).respond(status_code=500)
         with pytest.raises(WeatherError):
-            _client().fetch(LAT, LON)
+            asyncio.run(_client().fetch(LAT, LON))
 
 
 def test_sends_user_agent_header() -> None:
@@ -221,7 +222,7 @@ def test_sends_user_agent_header() -> None:
         router.get(GRID_URL).respond(json=GRID)
         router.get(STATIONS_URL).respond(json=STATIONS)
         router.get(OBS_URL).respond(json=_obs([], "Clear"))
-        NwsClient("my-agent (t@example.com)").fetch(LAT, LON)
+        asyncio.run(NwsClient("my-agent (t@example.com)").fetch(LAT, LON))
         assert points_route.calls[-1].request.headers["User-Agent"] == "my-agent (t@example.com)"
 
 

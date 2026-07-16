@@ -58,7 +58,7 @@ class _FakeNwsClient:
     def __init__(self, *args, **kwargs) -> None:
         pass
 
-    def fetch(self, lat, lon):
+    async def fetch(self, lat, lon):
         return None
 
 
@@ -66,7 +66,7 @@ class _FakeMtaClient:
     def __init__(self, *args, **kwargs) -> None:
         pass
 
-    def fetch(self, now=None):
+    async def fetch(self, now=None):
         return [StationBoard(name="Union Sq", arrivals_by_direction={})]
 
 
@@ -157,11 +157,11 @@ def _patch_pipeline_entrypoints(monkeypatch) -> dict[str, int]:
     """Replace the pipeline one-shot/loop entrypoints with counters; return the call tally."""
     called = {"once": 0, "loop": 0}
 
-    def _once(cfg):
+    async def _once(cfg):
         called["once"] += 1
         return pipeline.RunResult(written=[], failed=[])
 
-    def _loop(cfg) -> None:
+    async def _loop(cfg) -> None:
         called["loop"] += 1
 
     monkeypatch.setattr("kindle_dash_gen.pipeline.run_once", _once)
@@ -191,10 +191,10 @@ def test_run_without_flag_starts_loop(tmp_path, monkeypatch) -> None:
 
 def test_run_one_shot_exits_nonzero_when_a_dashboard_fails(tmp_path, monkeypatch) -> None:
     # A one-shot must fail loudly (non-zero) so cron/systemd sees a failed render.
-    monkeypatch.setattr(
-        "kindle_dash_gen.pipeline.run_once",
-        lambda cfg: pipeline.RunResult(written=[], failed=["main"]),
-    )
+    async def _once(cfg):
+        return pipeline.RunResult(written=[], failed=["main"])
+
+    monkeypatch.setattr("kindle_dash_gen.pipeline.run_once", _once)
     config_path = _write_config(tmp_path)
 
     result = runner.invoke(app, ["--config", str(config_path), "run", "--one-shot"])
@@ -204,10 +204,10 @@ def test_run_one_shot_exits_nonzero_when_a_dashboard_fails(tmp_path, monkeypatch
 
 def test_run_one_shot_exits_zero_when_all_sources_down(tmp_path, monkeypatch) -> None:
     # An empty result with no failures is a legitimate skip, not an error → exit 0.
-    monkeypatch.setattr(
-        "kindle_dash_gen.pipeline.run_once",
-        lambda cfg: pipeline.RunResult(written=[], failed=[]),
-    )
+    async def _once(cfg):
+        return pipeline.RunResult(written=[], failed=[])
+
+    monkeypatch.setattr("kindle_dash_gen.pipeline.run_once", _once)
     config_path = _write_config(tmp_path)
 
     result = runner.invoke(app, ["--config", str(config_path), "run", "--one-shot"])
@@ -303,7 +303,7 @@ class _FakeNwsWithReport:
     def __init__(self, *args, **kwargs) -> None:
         pass
 
-    def fetch(self, lat, lon):
+    async def fetch(self, lat, lon):
         return _weather_report()
 
 
@@ -311,7 +311,7 @@ class _FakeMtaWithBoard:
     def __init__(self, *args, **kwargs) -> None:
         pass
 
-    def fetch(self, now=None):
+    async def fetch(self, now=None):
         return [
             StationBoard(
                 name="Union Sq",
@@ -431,7 +431,7 @@ _LOCAL_SOURCE = (
     "    Config = Cfg\n"
     "    def __init__(self, config):\n"
     "        self._who = config.who\n"
-    "    def fetch(self, now):\n"
+    "    async def fetch(self, now):\n"
     "        return {'greeting_for': self._who}\n"
     "register_source('greeter', Greeter)\n"
 )

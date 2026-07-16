@@ -61,8 +61,10 @@ class _MySource(Source[MyConfig]):
     def __init__(self, config: MyConfig) -> None:
         self._config = config
 
-    def fetch(self, now: datetime) -> MyData:
+    async def fetch(self, now: datetime) -> MyData:
         try:
+            # I/O is async: await it (e.g. niquests.AsyncSession) so the pipeline can fetch
+            # every source concurrently.
             ...  # hit self._config.endpoint, build MyData
         except SomeLibraryError as exc:
             raise SourceError(f"my_source unavailable: {exc}") from exc
@@ -90,11 +92,13 @@ A source class satisfies `kindle_dash_gen.sources.registry.Source`:
   unknown source fails fast at startup, not mid-run.
 - `__init__(self, config)` — receives the validated `Config` instance. Declaring the class as
   `Source[MyConfig]` types this parameter as `MyConfig`.
-- `fetch(self, now: datetime) -> <data>` — returns the source's data object, whatever class it is;
-  that class becomes the object's key in `DashboardData.source_data`. Return `None` when there is
-  simply no data this run. A fetch **failure** raises `SourceError` (or a subclass); the pipeline
-  isolates it (drops this source, logs, and renders with whatever else was gathered). `now` is the
-  single generation timestamp shared across the render.
+- `async def fetch(self, now: datetime) -> <data>` — a coroutine returning the source's data object,
+  whatever class it is; that class becomes the object's key in `DashboardData.source_data`. `fetch`
+  is **async** so the pipeline can fetch every source concurrently — `await` your I/O inside it (e.g.
+  `niquests.AsyncSession`). Return `None` when there is simply no data this run. A fetch **failure**
+  raises `SourceError` (or a subclass); the pipeline isolates it (drops this source, logs, and
+  renders with whatever else was gathered). `now` is the single generation timestamp shared across
+  the render.
 - `cli(cls) -> typer.Typer` *(optional classmethod)* — source-specific CLI subcommands. The CLI
   mounts every source under `source <name>`: with no verb, `source <name>` runs `fetch` and
   pretty-prints the result (the default); the commands in your returned `typer.Typer` become verbs

@@ -8,10 +8,13 @@ Run with `uv run pytest` (config in `pyproject.toml`: `testpaths = ["tests"]`,
 - **Tests are offline.** No test hits a real network. HTTP-backed clients are tested with
   `niquests-mock` (imported as `import niquests_mock as nm`); collaborators that aren't HTTP
   (the MTA feed, the layout in pipeline tests) are stubbed via injected fakes or `monkeypatch`.
-- **Dependency injection over patching where the seam exists.** `NwsClient` takes an optional
-  `session`; `MtaClient` takes an optional `feed_loader`. Prefer passing a fake through the
-  constructor; use `monkeypatch.setattr(pipeline, "MtaClient", Fake)` only for wiring at the
-  pipeline level.
+- **Async fetches.** `fetch` (and `gather`/`run_once`/`run`) are coroutines; tests drive them with
+  `asyncio.run(...)` (e.g. `asyncio.run(_client().fetch(LAT, LON))`).
+- **Dependency injection over patching where the seam exists.** `NwsClient` opens its own
+  `niquests.AsyncSession`, so NWS tests mock at the HTTP layer with `niquests-mock` (no session is
+  injected). `MtaClient` takes an optional async `feed_loader` (`Callable[[str], Awaitable[NYCTFeed]]`);
+  prefer passing a fake through the constructor, and use `monkeypatch.setattr(pipeline, "MtaClient", Fake)`
+  only for wiring at the pipeline level.
 - **Config in tests** is built with `Config.model_validate(CONFIG_DICT)` from an inline dict
   (see `tests/test_pipeline.py`), not by loading a TOML file.
 - **Real image assertions.** Pillow-touching tests assert against actual decoded output
