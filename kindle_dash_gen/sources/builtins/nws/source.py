@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict
 from kindle_dash_gen.sources.registry import Source
 from kindle_dash_gen.sources.toolkit import SourceError
 
-from .model import HourlyForecast, NwsData, Temperature
+from .model import HourlyForecast, NwsData, Temperature, WeatherAlert
 
 NWS_API = "https://api.weather.gov"
 
@@ -40,6 +40,9 @@ class WeatherError(SourceError):
 # ``except A, B:`` under Python 3.14's grammar (valid there, but non-idiomatic and non-portable).
 _APPARENT_SWALLOW = (WeatherError, KeyError, TypeError)
 _OBSERVATION_SWALLOW = (WeatherError, KeyError, IndexError, TypeError)
+_ALERTS_SWALLOW = (WeatherError, KeyError, TypeError, ValueError)
+# A single malformed alert feature (e.g. missing ``event``) is skipped, not fatal to the list.
+_ALERT_ITEM_SWALLOW = (KeyError, TypeError)
 
 
 class NwsClient:
@@ -72,8 +75,8 @@ class NwsClient:
         """Fetch current conditions and the near-term forecast for a location (SI).
 
         NWS is a multi-step API: the ``/points`` lookup must complete first (it yields the per-
-        location URLs), then the four independent downstream calls — hourly, daily, the apparent-
-        temperature grid, and the latest observation — are fetched concurrently.
+        location URLs), then the five independent downstream calls — hourly, daily, the apparent-
+        temperature grid, the latest observation, and active alerts — are fetched concurrently.
         """
         # NWS requires a User-Agent identifying the caller.
         async with niquests.AsyncSession() as session:
@@ -82,10 +85,7 @@ class NwsClient:
             return await self._fetch(session, lat, lon)
 
     async def _fetch(self, session: niquests.AsyncSession, lat: float, lon: float) -> NwsData:
-        # NWS rejects coordinates with more than 4 decimal places.
-        point = await self._get_json(
-            session, f"{NWS_API}/points/{round(lat, 4):.4f},{round(lon, 4):.4f}"
-        )
+        point = await self._get_json(session, f"{NWS_API}/points/{_point(lat, lon)}")
         try:
             props = point["properties"]
             forecast_url = props["forecast"]
@@ -99,12 +99,13 @@ class NwsClient:
             raise WeatherError("unexpected NWS /points response") from exc
 
         params = {"units": "si"}
-        # The four downstream calls are independent, so fetch them concurrently.
-        hourly, daily, apparent, (raining, observed) = await asyncio.gather(
+        # The five downstream calls are independent, so fetch them concurrently.
+        hourly, daily, apparent, (raining, observed), alerts = await asyncio.gather(
             self._get_json(session, hourly_url, params),
             self._get_json(session, forecast_url, params),
             self._apparent_series(session, grid_url),
             self._observation(session, stations_url),
+            self._alerts(session, lat, lon),
         )
 
         try:
@@ -136,6 +137,7 @@ class NwsClient:
                 hourly=self._upcoming_hours(hourly_periods, apparent),
                 as_of=as_of,
                 location_name=location_name,
+                alerts=alerts,
             )
         except (KeyError, ValueError) as exc:
             raise WeatherError("unexpected NWS forecast response") from exc
@@ -215,6 +217,74 @@ class NwsClient:
             return None, None
         text = obs.get("textDescription")
         return _is_raining(obs.get("presentWeather") or [], text), text
+
+    async def _alerts(
+        self, session: niquests.AsyncSession, lat: float, lon: float
+    ) -> list[WeatherAlert]:
+        """Active NWS alerts for the point, or [] if unavailable.
+
+        Alerts are enrichment: a failure here degrades to no alerts rather than failing the
+        whole report. Every currently-active alert for the point is carried unfiltered (NWS
+        returns them in a single response; the layout decides what to render).
+        """
+        try:
+            payload = await self._get_json(
+                session, f"{NWS_API}/alerts/active", {"point": _point(lat, lon)}
+            )
+            features = payload["features"]
+        except _ALERTS_SWALLOW:
+            return []
+        # Isolate per feature: one malformed alert must not drop the valid siblings.
+        alerts = []
+        for feature in features:
+            try:
+                alerts.append(_parse_alert(feature["properties"]))
+            except _ALERT_ITEM_SWALLOW:
+                continue
+        return alerts
+
+
+def _point(lat: float, lon: float) -> str:
+    """Format a lat,lon point string; NWS rejects more than 4 decimal places."""
+    return f"{round(lat, 4):.4f},{round(lon, 4):.4f}"
+
+
+def _parse_alert(props: dict) -> WeatherAlert:
+    """Build a WeatherAlert from an alert feature's ``properties``.
+
+    ``event`` is required (a feature lacking it is treated as malformed and skipped upstream).
+    NWS-populated classification fields default to the CAP ``"Unknown"`` vocabulary when absent;
+    the free-text and timestamp fields degrade to ``None``.
+    """
+    return WeatherAlert(
+        event=props["event"],
+        category=props.get("category") or "Unknown",
+        severity=props.get("severity") or "Unknown",
+        certainty=props.get("certainty") or "Unknown",
+        urgency=props.get("urgency") or "Unknown",
+        status=props.get("status") or "Unknown",
+        message_type=props.get("messageType") or "Unknown",
+        area_desc=props.get("areaDesc") or "",
+        sender_name=props.get("senderName") or "",
+        headline=props.get("headline"),
+        description=props.get("description"),
+        instruction=props.get("instruction"),
+        response=props.get("response"),
+        effective=_parse_alert_time(props.get("effective")),
+        onset=_parse_alert_time(props.get("onset")),
+        expires=_parse_alert_time(props.get("expires")),
+        ends=_parse_alert_time(props.get("ends")),
+    )
+
+
+def _parse_alert_time(value: str | None) -> datetime | None:
+    """Parse an ISO8601 alert timestamp, or None if absent/malformed."""
+    if value is None:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError, TypeError:
+        return None
 
 
 def _apparent_at(series: ApparentSeries, target: datetime) -> float | None:

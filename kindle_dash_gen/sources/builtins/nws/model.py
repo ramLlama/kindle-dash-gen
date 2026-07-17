@@ -8,8 +8,37 @@ each provider's own type in its own adapter.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
+
+
+@dataclass(frozen=True, kw_only=True)
+class WeatherAlert:
+    """One active NWS weather alert (e.g. a Flash Flood Warning).
+
+    Mirrors the CAP alert ``properties`` NWS supplies. Text/classification fields that NWS always
+    populates are plain ``str``; ones NWS may omit are ``str | None``. All four timestamps are
+    ``datetime | None`` (absent or unparseable degrade to ``None``). Values are carried verbatim;
+    presentation is the layout's job.
+    """
+
+    event: str  # alert type, e.g. "Flash Flood Warning"
+    category: str  # CAP category, e.g. "Met" (meteorological)
+    severity: str  # CAP severity: Extreme/Severe/Moderate/Minor/Unknown
+    certainty: str  # CAP certainty: Observed/Likely/Possible/Unlikely/Unknown
+    urgency: str  # CAP urgency: Immediate/Expected/Future/Past/Unknown
+    status: str  # CAP status, e.g. "Actual"
+    message_type: str  # CAP msgType, e.g. "Alert"/"Update"/"Cancel"
+    area_desc: str  # affected-area text, e.g. "Elko, NV"
+    sender_name: str  # issuing office, e.g. "NWS Elko NV"
+    headline: str | None  # human-readable summary line
+    description: str | None  # multi-paragraph body (WHAT/WHERE/WHEN/IMPACTS)
+    instruction: str | None  # preparedness actions ("Turn around, don't drown...")
+    response: str | None  # recommended response, e.g. "Avoid"/"Prepare"
+    effective: datetime | None  # when the alert was issued/effective
+    onset: datetime | None  # when the alerted event begins
+    expires: datetime | None  # when the alert message expires
+    ends: datetime | None  # when the alerted event ends
 
 
 @dataclass(frozen=True)
@@ -51,3 +80,4 @@ class NwsData:
     hourly: list[HourlyForecast]  # upcoming hours
     as_of: datetime
     location_name: str | None = None  # e.g. "New York, NY"
+    alerts: list[WeatherAlert] = field(default_factory=list)  # active NWS alerts

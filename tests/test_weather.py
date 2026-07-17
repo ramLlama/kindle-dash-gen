@@ -17,6 +17,7 @@ GRID_URL = "https://api.weather.gov/gridpoints/OKX/34,44"
 STATIONS_URL = "https://api.weather.gov/gridpoints/OKX/34,44/stations"
 STATION_URL = "https://api.weather.gov/stations/KNYC"
 OBS_URL = f"{STATION_URL}/observations/latest"
+ALERTS_URL = "https://api.weather.gov/alerts/active"
 
 POINTS = {
     "properties": {
@@ -106,18 +107,59 @@ GRID = {
 
 STATIONS = {"features": [{"id": STATION_URL, "properties": {"stationIdentifier": "KNYC"}}]}
 
+# One fully-populated alert plus a sparse one (null free-text/timestamps, missing CAP fields).
+ALERTS = {
+    "features": [
+        {
+            "properties": {
+                "event": "Flash Flood Warning",
+                "category": "Met",
+                "severity": "Severe",
+                "certainty": "Likely",
+                "urgency": "Immediate",
+                "status": "Actual",
+                "messageType": "Alert",
+                "areaDesc": "Elko, NV",
+                "senderName": "NWS Elko NV",
+                "headline": "Flash Flood Warning until 9:30PM EDT",
+                "description": "* WHAT...Flash flooding.\n* WHERE...Elko.",
+                "instruction": "Turn around, don't drown.",
+                "response": "Avoid",
+                "effective": "2026-07-01T14:00:00-04:00",
+                "onset": "2026-07-01T14:02:00-04:00",
+                "expires": "2026-07-01T21:30:00-04:00",
+                "ends": "2026-07-01T21:30:00-04:00",
+            }
+        },
+        {
+            "properties": {
+                "event": "Special Weather Statement",
+                "severity": "Minor",
+                "headline": None,
+                "onset": None,
+                "expires": "2026-07-01T18:00:00-04:00",
+            }
+        },
+    ]
+}
+NO_ALERTS = {"features": []}
+
 
 def _obs(present_weather: list[dict], text: str) -> dict:
     return {"properties": {"presentWeather": present_weather, "textDescription": text}}
 
 
-def _route_all(router, obs=None) -> None:
+def _route_all(router, obs=None, alerts=None) -> None:
     router.get(POINTS_URL).respond(json=POINTS)
     router.get(HOURLY_URL, params={"units": "si"}).respond(json=HOURLY)
     router.get(FORECAST_URL, params={"units": "si"}).respond(json=FORECAST)
     router.get(GRID_URL).respond(json=GRID)
     router.get(STATIONS_URL).respond(json=STATIONS)
     router.get(OBS_URL).respond(json=obs if obs is not None else _obs([], "Clear"))
+    # niquests-mock matches full URL incl. query; pass `params` to match by base URL only.
+    router.get(ALERTS_URL, params={"point": f"{LAT:.4f},{LON:.4f}"}).respond(
+        json=alerts if alerts is not None else NO_ALERTS
+    )
 
 
 def _client() -> NwsClient:
@@ -174,9 +216,77 @@ def test_observation_failure_degrades_gracefully() -> None:
         router.get(FORECAST_URL, params={"units": "si"}).respond(json=FORECAST)
         router.get(GRID_URL).respond(json=GRID)
         router.get(STATIONS_URL).respond(status_code=500)  # observation unavailable
+        router.get(ALERTS_URL, params={"point": f"{LAT:.4f},{LON:.4f}"}).respond(json=NO_ALERTS)
         r = asyncio.run(_client().fetch(LAT, LON))
     assert r.raining is None
     assert r.observed_conditions is None
+    assert r.temperature.real == 31  # core report still produced
+
+
+def test_alerts_parsed() -> None:
+    with nm.mock(assert_all_called=False) as router:
+        _route_all(router, alerts=ALERTS)
+        r = asyncio.run(_client().fetch(LAT, LON))
+    assert [a.event for a in r.alerts] == ["Flash Flood Warning", "Special Weather Statement"]
+    first = r.alerts[0]
+    assert first.category == "Met"
+    assert first.severity == "Severe"
+    assert first.certainty == "Likely"
+    assert first.urgency == "Immediate"
+    assert first.status == "Actual"
+    assert first.message_type == "Alert"
+    assert first.area_desc == "Elko, NV"
+    assert first.sender_name == "NWS Elko NV"
+    assert first.headline == "Flash Flood Warning until 9:30PM EDT"
+    assert first.description == "* WHAT...Flash flooding.\n* WHERE...Elko."
+    assert first.instruction == "Turn around, don't drown."
+    assert first.response == "Avoid"
+    assert first.effective == datetime.fromisoformat("2026-07-01T14:00:00-04:00")
+    assert first.onset == datetime.fromisoformat("2026-07-01T14:02:00-04:00")
+    assert first.expires == datetime.fromisoformat("2026-07-01T21:30:00-04:00")
+    assert first.ends == datetime.fromisoformat("2026-07-01T21:30:00-04:00")
+    # A sparse alert: null free-text degrades to None, missing CAP fields to their defaults.
+    second = r.alerts[1]
+    assert second.headline is None
+    assert second.description is None
+    assert second.onset is None
+    assert second.effective is None  # key absent entirely
+    assert second.category == "Unknown"  # missing classification -> CAP "Unknown"
+    assert second.area_desc == ""  # missing text -> empty
+
+
+def test_malformed_alert_feature_is_skipped() -> None:
+    # A feature missing the required `event` key is dropped; valid siblings survive.
+    malformed = {
+        "features": [
+            {"properties": {"severity": "Severe"}},  # no "event" -> skipped
+            ALERTS["features"][0],  # valid Flash Flood Warning -> kept
+        ]
+    }
+    with nm.mock(assert_all_called=False) as router:
+        _route_all(router, alerts=malformed)
+        r = asyncio.run(_client().fetch(LAT, LON))
+    assert [a.event for a in r.alerts] == ["Flash Flood Warning"]
+
+
+def test_no_active_alerts() -> None:
+    with nm.mock(assert_all_called=False) as router:
+        _route_all(router)  # NO_ALERTS by default
+        r = asyncio.run(_client().fetch(LAT, LON))
+    assert r.alerts == []
+
+
+def test_alerts_failure_degrades_gracefully() -> None:
+    with nm.mock(assert_all_called=False) as router:
+        router.get(POINTS_URL).respond(json=POINTS)
+        router.get(HOURLY_URL, params={"units": "si"}).respond(json=HOURLY)
+        router.get(FORECAST_URL, params={"units": "si"}).respond(json=FORECAST)
+        router.get(GRID_URL).respond(json=GRID)
+        router.get(STATIONS_URL).respond(json=STATIONS)
+        router.get(OBS_URL).respond(json=_obs([], "Clear"))
+        router.get(ALERTS_URL, params={"point": f"{LAT:.4f},{LON:.4f}"}).respond(status_code=500)
+        r = asyncio.run(_client().fetch(LAT, LON))
+    assert r.alerts == []  # alert-endpoint failure isolated
     assert r.temperature.real == 31  # core report still produced
 
 
@@ -222,6 +332,7 @@ def test_sends_user_agent_header() -> None:
         router.get(GRID_URL).respond(json=GRID)
         router.get(STATIONS_URL).respond(json=STATIONS)
         router.get(OBS_URL).respond(json=_obs([], "Clear"))
+        router.get(ALERTS_URL, params={"point": f"{LAT:.4f},{LON:.4f}"}).respond(json=NO_ALERTS)
         asyncio.run(NwsClient("my-agent (t@example.com)").fetch(LAT, LON))
         assert points_route.calls[-1].request.headers["User-Agent"] == "my-agent (t@example.com)"
 

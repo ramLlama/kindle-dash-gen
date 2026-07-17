@@ -78,13 +78,18 @@ The `nws` source (`NwsSource` + `NwsConfig`, in `source.py`) wraps `NwsClient` a
    URLs: `forecast`, `forecastHourly`, `forecastGridData`, `observationStations`, plus a
    `relativeLocation` used for the display `location_name`. This must complete first (it yields the
    downstream URLs).
-2. The **four downstream calls run concurrently** (`asyncio.gather`), since they are independent:
+2. The **five downstream calls run concurrently** (`asyncio.gather`), since they are independent:
    - `GET` the hourly and daily forecast URLs with `?units=si`.
    - `GET` the gridpoint data → parse the `apparentTemperature` time series (windows of
      `(start, value)`), used to attach a `feels_like` to each `Temperature`.
    - `GET` the nearest observation station's latest observation → derive `raining` (keyword scan
      over `presentWeather`, falling back to the text description) and `observed_conditions`. This
      is enrichment only: failure returns `(None, None)`, never fails the report.
+   - `GET /alerts/active?point={lat},{lon}` → every active alert for the point, parsed into
+     `WeatherAlert` (`_parse_alert`) and carried unfiltered on `NwsData.alerts`. Enrichment only:
+     a request failure degrades to `[]`, and a single malformed feature is skipped rather than
+     dropping the valid siblings (per-item `try/except`). Only `event` is required per alert;
+     other CAP fields default to `"Unknown"`/`""`/`None`.
 
 **High/Low rollover:** `_high_low` picks today's daytime high and overnight low, but after
 `rollover_hour` (default 20:00 local) it targets the next day. It selects the first daytime/

@@ -144,6 +144,9 @@ failure; return `None` for the benign "nothing to report this run" case.
   providers producing their own peer data types (`NwsData` vs `OpenMeteoData`, no shared model), a
   worked example of the provider-owned-data principle above; `open-meteo` also shows an `asyncio.gather`
   fan-out where one endpoint (air quality) degrades to `None` on failure while the other fails the source.
+  `nws` fans out further still — its `/alerts/active` call is best-effort enrichment (failure → `[]`,
+  and one malformed alert feature is skipped without dropping its siblings), a worked example of
+  per-item isolation within a single source.
   A single `__init__.py` works too; discovery only imports the subpackage, so registration must be
   reachable from `__init__.py`.
 - Keep data in SI units through your data classes and round/convert only at display time (the "SI

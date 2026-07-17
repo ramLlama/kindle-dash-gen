@@ -83,8 +83,12 @@ docs/sources.md        # how to write a data-source plugin (the public contract)
   decides how many arrivals to show at render.
 - **Direction** is a `StrEnum` with values `"N"`/`"S"` (GTFS uptown/downtown, nominal for the L).
 - **NwsData** (`sources/builtins/nws/model.py`) carries current conditions, today/tomorrow
-  high-low, and upcoming hours. `Temperature` bundles a `real` value with an optional `feels_like`
-  (apparent).
+  high-low, upcoming hours, and active weather **alerts** (`list[WeatherAlert]`, defaults to `[]`).
+  `Temperature` bundles a `real` value with an optional `feels_like` (apparent). `WeatherAlert`
+  mirrors the CAP alert fields NWS supplies (`event`, `category`, `severity`, `certainty`,
+  `urgency`, `status`, `message_type`, `area_desc`, `sender_name`, `headline`, `description`,
+  `instruction`, `response`, and the `effective`/`onset`/`expires`/`ends` timestamps); alerts are
+  carried unfiltered (no severity knob) and are unused by any layout until a layout draws them.
 - **OpenMeteoData** (`sources/builtins/open_meteo/model.py`) is a provider-owned peer to `NwsData`
   (its own independent `Temperature`/`HourlyForecast`, no shared hierarchy) for the fields Open-Meteo
   supplies: current conditions, today high/low (with rollover), upcoming hours, and a raw WMO
