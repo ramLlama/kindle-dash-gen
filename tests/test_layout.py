@@ -11,12 +11,13 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 from pydantic import ValidationError
 
 from kindle_dash_gen.models import DashboardData
+from kindle_dash_gen.render.builtins.glanceable import _cap_height, _cap_midline
 from kindle_dash_gen.render.layout import LayoutError, render
-from kindle_dash_gen.render.toolkit import _resolve_face
+from kindle_dash_gen.render.toolkit import INK, PAPER, Fonts, _resolve_face
 from kindle_dash_gen.sources.builtins.mta.model import (
     Direction,
     MtaData,
@@ -292,6 +293,66 @@ def test_renders_with_aqi_and_alerts() -> None:
     )
     img = _render(data)
     assert img.size == (W, H)
+
+
+def _font_or_skip(family: str) -> Fonts:
+    """``Fonts(family)``, skipping the test when that family isn't installed on this machine."""
+    fonts = Fonts(family)
+    try:
+        fonts.get(40, "Bold")
+    except LayoutError:
+        pytest.skip(f"font {family!r} is not installed")
+    return fonts
+
+
+# "Adwaita Sans" is DEFAULT_FONT, so it's assumed installed; "Charter" (a small-descent face, the
+# one that surfaced the bug) is opportunistic — skipped where it isn't available.
+@pytest.mark.parametrize("font", ["Adwaita Sans", "Charter"])
+def test_cap_metrics_match_rendered_ink(font: str) -> None:
+    # The regression that motivated these helpers: an icon centered on the `lm` anchor's `cy` rides
+    # high above the text, because `m` centers the em box (ascent+descent), not the caps. Assert the
+    # computed cap band against what Pillow actually inks, rather than re-deriving the formula.
+    ft = _font_or_skip(font).get(40, "Bold")
+    cy = 100.0
+    img = Image.new("L", (400, 200), PAPER)
+    ImageDraw.Draw(img).text((10, cy), "HH", font=ft, fill=INK, anchor="lm")
+    rows = [y for y in range(200) if any(img.getpixel((x, y)) < 128 for x in range(400))]
+    # "H" is all caps: its ink spans exactly the cap band, so both must agree within a pixel.
+    assert abs(_cap_midline(ft, cy) - (rows[0] + rows[-1]) / 2) <= 1.0
+    assert abs(_cap_height(ft) - (rows[-1] - rows[0] + 1)) <= 1.0
+
+
+def _icons_pasted(monkeypatch, data: DashboardData) -> list[str]:
+    """Render ``data``, recording the name of every icon the layout pastes."""
+    from kindle_dash_gen.render.builtins import glanceable
+
+    names: list[str] = []
+    original = glanceable._Glanceable._paste_icon
+
+    def spy(self, name, cx, cy, box):
+        names.append(name)
+        return original(self, name, cx, cy, box)
+
+    monkeypatch.setattr(glanceable._Glanceable, "_paste_icon", spy)
+    _render(data)
+    return names
+
+
+@pytest.mark.parametrize("aqi,flagged", [(110, False), (165, True)])
+def test_unhealthy_aqi_is_flagged(monkeypatch, aqi: int, flagged: bool) -> None:
+    # An "Unhealthy" AQI earns the same warning icon an alert gets; "Unhealthy (Sensitive)" (110)
+    # is scoped to at-risk groups and stays a plain row.
+    data = DashboardData(
+        generated_at=NOW,
+        source_data={om.OpenMeteoData: replace(_open_meteo_weather(), us_aqi=aqi)},
+    )
+    assert ("warning" in _icons_pasted(monkeypatch, data)) is flagged
+
+
+def test_alert_row_draws_warning_icon(monkeypatch) -> None:
+    nws = replace(_weather(), alerts=[_alert("Flash Flood Warning", "Severe")])
+    data = DashboardData(generated_at=NOW, source_data={NwsData: nws})
+    assert "warning" in _icons_pasted(monkeypatch, data)
 
 
 def test_renders_without_weather() -> None:

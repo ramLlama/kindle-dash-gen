@@ -132,7 +132,9 @@ The public surface for building layouts — everything the bundled `glanceable` 
   `load_asset_image("kindle_dash_gen_nyc_plugins.my_layout", "assets/bg.png")`). Bundle assets
   inside your plugin package and reference them by your package name.
 - Display formatters — `format_reading`, `format_apparent`, `format_temp`, `format_wind`,
-  `format_eta`, and `weather_icon`. **Render through these**; all data reaches a layout in SI, and
+  `format_aqi`, `format_eta`, and `weather_icon`, plus the `aqi_is_unhealthy` predicate (US AQI 151+,
+  i.e. "Unhealthy" or worse — a layout can flag those readings; the "Unhealthy (Sensitive)" band
+  below it is scoped to at-risk groups). **Render through these**; all data reaches a layout in SI, and
   these apply unit conversion + rounding at display time (the "SI internally, round at display"
   invariant). `format_reading`/`format_apparent` take anything exposing `.real`/`.feels_like`, so
   each provider's own temperature type works. `weather_icon(observed, conditions, raining)` takes

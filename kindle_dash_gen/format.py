@@ -121,6 +121,17 @@ def format_aqi(us_aqi: int | None) -> str:
     return f"AQI {us_aqi} · {label}"
 
 
+# Above this the AQI is "Unhealthy" or worse. Mirrors the "Unhealthy (Sensitive)" upper bound in
+# `_AQI_CATEGORIES` above (keep the two in sync): the EPA scopes that band to at-risk groups only,
+# so the dashboard treats it as a normal reading rather than something to flag.
+_AQI_UNHEALTHY_ABOVE = 150
+
+
+def aqi_is_unhealthy(us_aqi: int | None) -> bool:
+    """Whether ``us_aqi`` is "Unhealthy" or worse (EPA 151+); False when unavailable."""
+    return us_aqi is not None and us_aqi > _AQI_UNHEALTHY_ABOVE
+
+
 def format_wind(kmh: float | None, direction: str, units: str) -> str:
     """Format a wind speed (input km/h) and direction per display ``units`` (shows "mph"/"kmph")."""
     if kmh is None:

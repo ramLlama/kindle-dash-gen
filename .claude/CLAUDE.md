@@ -117,8 +117,9 @@ concretely: the bundled `glanceable` layout has a private `_weather` adapter tha
 whichever weather providers are present into one layout-local draw surface — hero/hourly from the
 preferred provider (Open-Meteo, NWS fallback), **AQI off Open-Meteo and alerts off NWS
 independently** (each absent when its provider isn't configured), so `render()` never inspects a
-provider type. The hero draws the AQI badge (`format_aqi`) and the most-severe active alert (warning
-triangle + `+N more`).
+provider type. The hero draws the AQI badge (`format_aqi`) and the most-severe active alert
+(`+N more` tail) through one shared `_metric_row`, which flags an alert — or an "Unhealthy"-or-worse
+AQI (`aqi_is_unhealthy`, EPA 151+) — in bold behind the bundled `warning.png` icon.
 
 See [architecture.md](architecture.md) for data flow, the NWS multi-step fetch, the Open-Meteo
 concurrent forecast+AQI fetch, MTA feed deduplication, and the layout/post-process details.

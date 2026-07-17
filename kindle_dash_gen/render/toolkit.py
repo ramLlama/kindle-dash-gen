@@ -18,6 +18,7 @@ from PIL import Image, ImageFont
 # these (never convert units themselves) to honor the "SI internally, round at display" invariant;
 # `weather_icon(observed, conditions, raining)` maps condition text to a bundled-icon name.
 from ..format import (
+    aqi_is_unhealthy,
     format_apparent,
     format_aqi,
     format_eta,
@@ -35,6 +36,7 @@ __all__ = [
     "LayoutError",
     "fit_font",
     "load_asset_image",
+    "aqi_is_unhealthy",
     "format_apparent",
     "format_aqi",
     "format_eta",

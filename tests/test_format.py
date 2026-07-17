@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from kindle_dash_gen.format import (
+    aqi_is_unhealthy,
     format_aqi,
     format_eta,
     format_reading,
@@ -68,6 +69,22 @@ def test_format_wind(kmh, direction, units, expected) -> None:
 )
 def test_format_aqi(aqi, expected) -> None:
     assert format_aqi(aqi) == expected
+
+
+@pytest.mark.parametrize(
+    "aqi,expected",
+    [
+        (0, False),
+        (110, False),
+        (150, False),  # "Unhealthy (Sensitive)" is scoped to at-risk groups — a normal reading
+        (151, True),  # "Unhealthy" and worse
+        (250, True),
+        (400, True),
+        (None, False),
+    ],
+)
+def test_aqi_is_unhealthy(aqi, expected) -> None:
+    assert aqi_is_unhealthy(aqi) is expected
 
 
 @pytest.mark.parametrize(

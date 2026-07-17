@@ -12,7 +12,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Literal
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel, ConfigDict
 
 from kindle_dash_gen.models import DashboardData
@@ -22,6 +22,7 @@ from kindle_dash_gen.render.toolkit import (
     INK,
     PAPER,
     Fonts,
+    aqi_is_unhealthy,
     fit_font,
     format_apparent,
     format_aqi,
@@ -166,6 +167,41 @@ def _weather(data: DashboardData) -> _GlanceWeather | None:
     return replace(base, aqi=aqi, alerts=alerts)
 
 
+_ROW_SIZE = 40  # nominal type size of the hero's metric rows (wind / AQI / alert)
+_ICON_SLOT = 260  # horizontal space reserved for the hero's weather icon, at the right
+_WARN_ICON_SCALE = 1.15  # warning icon height as a multiple of cap height, so it reads as equal
+
+
+def _warn_gutter(font: ImageFont.FreeTypeFont) -> int:
+    """Width the warning icon and its trailing space occupy on a metric row set in ``font``."""
+    return round(_cap_height(font) * _WARN_ICON_SCALE) + 18
+
+
+def _alert_label(events: tuple[str, ...]) -> str:
+    """The most-severe alert's event name, with a "+N more" tail when others are active."""
+    if len(events) > 1:
+        return f"{events[0]}  +{len(events) - 1} more"
+    return events[0]
+
+
+def _cap_height(font: ImageFont.FreeTypeFont) -> float:
+    """The height of ``font``'s capitals, cap top to baseline."""
+    ascent, _ = font.getmetrics()
+    return ascent - font.getbbox("H")[1]
+
+
+def _cap_midline(font: ImageFont.FreeTypeFont, cy: float) -> float:
+    """The midline of ``font``'s capitals for text drawn at ``cy`` with an ``lm`` anchor.
+
+    Pillow's ``m`` anchor centers the *em box* (ascent + descent) on ``cy``, so for a face with a
+    small descent the visible ink lands well below ``cy``. An icon centered on ``cy`` would ride
+    high above the text beside it; centering on the caps instead is what the eye actually reads.
+    """
+    ascent, descent = font.getmetrics()
+    baseline = cy + (ascent + descent) / 2 - descent
+    return baseline - _cap_height(font) / 2
+
+
 def _load_icon(name: str, size: int) -> tuple[Image.Image, Image.Image]:
     """Load this plugin's icon ``name`` at ``size`` px as (grayscale, alpha mask)."""
     icon = load_asset_image(_PACKAGE, f"assets/icons/{name}.png")
@@ -243,66 +279,60 @@ class _Glanceable(Layout[GlanceableConfig]):
         return rule + 28
 
     def _hero(self, y: int, weather: _GlanceWeather) -> int:
-        icon_slot = 260  # horizontal space reserved for the icon at the right
         temp = format_apparent(weather.temperature, self.units)
-        temp_font = fit_font(self.fonts, temp, "Black", 190, self.w - 2 * _MARGIN - icon_slot - 30)
+        temp_font = fit_font(self.fonts, temp, "Black", 190, self.w - 2 * _MARGIN - _ICON_SLOT - 30)
         self.d.text((_MARGIN, y), temp, font=temp_font, fill=INK, anchor="la")
         temp_h = int(temp_font.getbbox(temp)[3])
 
         # Metric rows stacked beneath the temperature: wind, then AQI and an alert line — each drawn
-        # only when its provider supplied it (the adapter leaves them absent otherwise).
+        # only when its provider supplied it (the adapter leaves them absent otherwise). An
+        # unhealthy AQI is flagged like an alert: bold, behind the same warning icon.
         row_cy = y + temp_h + 40
         row_pitch = 52
         wind = format_wind(weather.wind_speed_kmh, weather.wind_direction, self.units)
-        self.d.text(
-            (_MARGIN, row_cy), wind, font=self.fonts.get(40, "Medium"), fill=INK, anchor="lm"
-        )
+        self._metric_row(row_cy, wind, "Medium", warn=False)
         if weather.aqi is not None:
             row_cy += row_pitch
-            self.d.text(
-                (_MARGIN, row_cy),
+            unhealthy = aqi_is_unhealthy(weather.aqi)
+            self._metric_row(
+                row_cy,
                 format_aqi(weather.aqi),
-                font=self.fonts.get(40, "Medium"),
-                fill=INK,
-                anchor="lm",
+                "Bold" if unhealthy else "Medium",
+                warn=unhealthy,
             )
         if len(weather.alerts) > 0:
             row_cy += row_pitch
-            self._alert_row(_MARGIN, row_cy, weather.alerts, icon_slot)
+            self._metric_row(row_cy, _alert_label(weather.alerts), "Bold", warn=True)
 
         bottom = row_cy + 46
         # weather icon: as large as the section allows, vertically centered on the right (the
         # adapter already resolved the icon name, handling each provider's conditions vocabulary)
         band_h = bottom - y
-        icon_box = int(min(icon_slot, band_h))
-        icon_cx = self.w - _MARGIN - icon_slot / 2
+        icon_box = int(min(_ICON_SLOT, band_h))
+        icon_cx = self.w - _MARGIN - _ICON_SLOT / 2
         self._paste_icon(weather.icon, icon_cx, y + band_h / 2, icon_box)
 
         # no rule here: separate the hourly strip from the hero with a little whitespace
         return bottom + 28
 
-    def _alert_row(self, x: float, cy: float, events: tuple[str, ...], icon_slot: int) -> None:
-        """A warning triangle + the most-severe alert's event, with a "+N more" tail if others."""
-        label = events[0]
-        if len(events) > 1:
-            label += f"  +{len(events) - 1} more"
-        tri = 17
-        self._warning(x + tri, cy, tri)
-        text_x = x + 2 * tri + 18
-        # keep the alert text clear of the right-side weather icon
-        max_w = self.w - _MARGIN - icon_slot - text_x
-        font = fit_font(self.fonts, label, "Bold", 40, max_w)
-        self.d.text((text_x, cy), label, font=font, fill=INK, anchor="lm")
+    def _metric_row(self, cy: float, text: str, style: str, *, warn: bool) -> None:
+        """A hero metric line at ``cy``: an optional warning icon, then ``text``.
 
-    def _warning(self, cx: float, cy: float, s: float) -> None:
-        """A filled warning triangle with a punched-out exclamation, centered on (cx, cy)."""
-        d = self.d
-        d.polygon(
-            (cx, cy - s, cx - s * 0.92, cy + s * 0.72, cx + s * 0.92, cy + s * 0.72), fill=INK
-        )
-        # exclamation in paper: a short bar over a dot, lower-centered in the triangle
-        d.line((cx, cy - s * 0.12, cx, cy + s * 0.22), fill=PAPER, width=max(2, int(s * 0.18)))
-        d.ellipse((cx - s * 0.12, cy + s * 0.36, cx + s * 0.12, cy + s * 0.58), fill=PAPER)
+        Text is shrunk to stay clear of the right-side weather icon. A ``warn`` row's icon is sized
+        and aligned to the text's caps, so the icon and the text read as one line.
+        """
+        x = _MARGIN
+        if warn:
+            # Fit against the gutter the *nominal* size would need, breaking the circularity of
+            # sizing the icon off a font that isn't chosen yet. The real icon is sized off the
+            # fitted font below, so its gutter is only ever narrower — the text still fits.
+            x += _warn_gutter(self.fonts.get(_ROW_SIZE, style))
+        font = fit_font(self.fonts, text, style, _ROW_SIZE, self.w - _MARGIN - _ICON_SLOT - x)
+        if warn:
+            box = round(_cap_height(font) * _WARN_ICON_SCALE)
+            self._paste_icon("warning", _MARGIN + box / 2, _cap_midline(font, cy), box)
+            x = _MARGIN + _warn_gutter(font)
+        self.d.text((x, cy), text, font=font, fill=INK, anchor="lm")
 
     def _hourly(self, y: int, weather: _GlanceWeather) -> int:
         hours = weather.hourly[:4]

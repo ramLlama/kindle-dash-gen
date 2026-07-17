@@ -197,7 +197,11 @@ declares `font: str | None` and `weather_temp_units: Literal["us","si","both"]`.
   (keyword match on observed/forecast conditions), Open-Meteo via a local `_wmo_icon(code)`
   WMO-code→icon map (the source keeps the raw code, so the layout, not the source, owns the
   classification). The hero draws AQI (`format_aqi`, EPA breakpoints) and, most-severe-first
-  (`_SEVERITY_RANK`), the top active alert with a hand-drawn warning triangle and a `+N more` tail.
+  (`_SEVERITY_RANK`), the top active alert with a `+N more` tail. Both go through one `_metric_row`
+  (shared with wind): an alert — or an AQI of "Unhealthy" or worse, per `aqi_is_unhealthy` — is set
+  bold behind the bundled `assets/icons/warning.png`. The icon is sized and centered off the row
+  font's **cap band** (`_cap_height`/`_cap_midline`), not Pillow's `lm` anchor, which centers the em
+  box (ascent + descent) and so leaves a small-descent face's ink well below the anchor.
   This is the concrete realization of the "a layout reconciles multiple providers in its own local
   adapter" principle. See `docs/plugins.md` for the full contract.
 
