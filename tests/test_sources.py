@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from kindle_dash_gen import plugins
 from kindle_dash_gen.sources import registry as source_registry_mod
 from kindle_dash_gen.sources.registry import SourceError, build_sources, register_source
+from kindle_dash_gen.sources.toolkit import Secret
 
 
 class _DemoConfig(BaseModel):
@@ -31,6 +32,24 @@ class _DemoSource:
         self.config = config
 
     async def fetch(self, now: datetime) -> _DemoConfig:
+        return self.config
+
+
+class _SecretConfig(BaseModel):
+    """A throwaway config typing a credential as Secret, the way a keyed source does."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    api_key: Secret
+
+
+class _SecretSource:
+    Config = _SecretConfig
+
+    def __init__(self, config: _SecretConfig) -> None:
+        self.config = config
+
+    async def fetch(self, now: datetime) -> _SecretConfig:
         return self.config
 
 
@@ -68,6 +87,18 @@ def test_build_sources_rejects_extra_key(source_registry) -> None:
 def test_build_sources_empty_is_empty(source_registry) -> None:
     # No configured sources is valid (every render then legitimately skips).
     assert build_sources({}) == {}
+
+
+def test_build_sources_resolves_a_secret_field(source_registry, monkeypatch) -> None:
+    # A Secret-typed credential survives the real config path: build_sources validates the raw
+    # [sources.<name>] table into the plugin's Config, and the value resolves at use time.
+    monkeypatch.setenv("KDG_TEST_SOURCE_KEY", "resolved-key")
+    register_source("demo_secret", _SecretSource)
+    _, config = build_sources(
+        {"demo_secret": {"api_key": {"value_from_env": "KDG_TEST_SOURCE_KEY"}}}
+    )["demo_secret"]
+    assert isinstance(config, _SecretConfig)
+    assert config.api_key.value == "resolved-key"
 
 
 def test_build_sources_resolves_bundled_nws_and_mta() -> None:

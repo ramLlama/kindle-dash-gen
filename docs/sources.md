@@ -106,6 +106,51 @@ A source class satisfies `kindle_dash_gen.sources.registry.Source`:
   default fetch. Sources resolve at invocation time, so a local `plugins_path` source's verbs work
   exactly like a bundled source's. (`list` is a reserved name — the group's own listing command.)
 
+## Secrets in config (`Secret`)
+
+A source that needs a credential (an API key, a token) should type that field as `Secret` rather
+than `str`, so the operator can keep the value out of the config file. It is part of the public
+plugin surface — import it from the toolkit, not from app config internals:
+
+```python
+from kindle_dash_gen.sources.toolkit import Secret, SourceError
+
+class MyConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    api_key: Secret
+```
+
+Exactly one of three forms must be given in the config table:
+
+```toml
+[sources.my_source]
+api_key = { value = "sk-live-…" }                  # literal (fine for a gitignored config.toml)
+api_key = { value_from_cmd = "pass show my-key" }  # stdout of a shell command
+api_key = { value_from_env = "MY_SOURCE_KEY" }     # an environment variable
+```
+
+Read `config.api_key.value` at use time to get the `str`. The resolved value is
+whitespace-stripped for all three forms (a stray newline from `export K=$(cat file)` would
+otherwise break an auth header). A literal is held as a pydantic `SecretStr`, so it is masked in
+`repr` and in validation errors — a config object can be logged without leaking the credential.
+
+Resolution deliberately happens at use time, not at validation, so merely loading a config never
+shells out or requires the environment to be populated (`--help`, `dashboard render`, and a config
+check all stay side-effect free). A failing command, a command that exceeds its 10-second timeout,
+or a missing environment variable raises `RuntimeError`; wrap it in your `SourceError` subclass if
+you resolve inside `fetch`. The timeout exists because password-manager CLIs (`pass`, `op`, `bw`)
+block on a passphrase prompt once their agent lock expires — unattended that would otherwise hang
+the whole run forever instead of failing one fetch.
+
+The value is **cached** after the first successful read (it is a `functools.cached_property`), so
+`.value` is cheap to read wherever it fits best (including per fetch) — a `value_from_cmd`
+subprocess never lands on the concurrent hot path more than once. A *failed* read is not cached, so
+a transient failure is retried next time. The tradeoff: a secret rotated underneath a long-running
+process is not picked up until it restarts.
+
+`Secret` is also re-exported from `kindle_dash_gen.render.toolkit` for layout plugins.
+
 ## `source_data` keying
 
 `gather()` collects each source's result into `DashboardData.source_data: dict[type, Any]`, keyed by

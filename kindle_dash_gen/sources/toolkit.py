@@ -6,7 +6,11 @@ depends only on the stable error type, not on registry internals.
 
 from __future__ import annotations
 
-__all__ = ["SourceError"]
+# Re-exported so a source's Config can type a credential field as ``Secret`` without reaching into
+# app config internals (see docs/sources.md).
+from ..config import Secret
+
+__all__ = ["Secret", "SourceError"]
 
 
 class SourceError(RuntimeError):

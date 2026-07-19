@@ -140,6 +140,9 @@ The public surface for building layouts — everything the bundled `glanceable` 
   each provider's own temperature type works. `weather_icon(observed, conditions, raining)` takes
   plain strings (pass `observed=None` if your source has no station observation) and returns the
   icon name (`"sunny"`/`"cloudy"`/`"rain"`/`"snow"`) a layout can pair with its own `assets/icons/`.
+- `Secret` — type a credential field in your layout's `Config` as `Secret` so the value can stay
+  out of the config file (a literal, a command's stdout, or an environment variable), then read
+  `.value` at use time. See [Secrets in config](sources.md#secrets-in-config-secret).
 - `LayoutError` — raise for unrecoverable layout problems; the pipeline treats it as a render
   failure for that dashboard (isolated from the others).
 

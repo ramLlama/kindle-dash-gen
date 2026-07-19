@@ -28,13 +28,13 @@ for syncing to the device. Intended to run unattended on an interval (e.g. every
 kindle_dash_gen/
   __main__.py          # `python -m kindle_dash_gen` entry -> cli.run()
   cli.py               # typer app: version, run, source group (dynamic), dashboard group
-  config.py            # TOML -> pydantic Config; Dashboard (output spec + layout_config)
+  config.py            # TOML -> pydantic Config; Dashboard (output spec + layout_config); Secret
   pipeline.py          # gather -> layout.render -> post_process -> atomic write
   format.py            # display formatters (temp/reading/apparent/wind/eta); SI -> display
   models/              # frozen dataclasses (domain models, no presentation)
     dashboard_data.py  # DashboardData (source_data keyed by produced type) — the only model here
   sources/             # data-source plugins (source-side mirror of render/)
-    toolkit.py         # public plugin API: SourceError (base all source errors subclass)
+    toolkit.py         # public plugin API: SourceError (base all source errors subclass) + Secret
     registry.py        # Source protocol, register_source, build_sources() dispatch
     builtins/          # bundled source plugins (discovered, not special-cased)
       nws/             # "nws" source (three-file package):
@@ -52,7 +52,7 @@ kindle_dash_gen/
         assets/stations.csv  #   bundled station lookup (for `source mta list-stations`)
   render/              # turn data into a Kindle-ready PNG (pillow layout + post-process)
     layout.py          # Layout protocol (owns its Config), register/validate/build_layout, render()
-    toolkit.py         # layout public plugin API (Fonts, INK/PAPER, fit_font, assets, format helpers)
+    toolkit.py         # layout public plugin API (Fonts, INK/PAPER, fit_font, assets, format helpers, Secret)
     builtins/          # bundled layout plugins (discovered, not special-cased)
       glanceable/      # the default layout as a self-contained plugin (owns GlanceableConfig + assets/icons/)
     postprocess.py     # post_process(): grayscale, fit, quantize (Pillow); Image in, PNG bytes out
@@ -167,14 +167,14 @@ subcommand loads it on demand via `_config(ctx)`.
     `render(data) -> PIL.Image.Image`. `build_layout`/`validate_layout` (in `render/layout.py`)
     validate the `[dashboards.<name>.layout_config]` table against the layout's `Config`, mirroring
     `build_sources`. Build on `render/toolkit.py` (`Fonts`, `INK`/`PAPER`, `fit_font`,
-    `load_asset_image`, `LayoutError`). See `docs/plugins.md`.
+    `load_asset_image`, `LayoutError`, `Secret`). See `docs/plugins.md`.
   - **Sources** register via `register_source` at import, bundled root
     `kindle_dash_gen.sources.builtins` (the `nws` and `mta` sources). A source is a `Source`
     protocol class with a `Config` and an **async** `fetch(now)` (`async def fetch(self, now) -> Any`)
     so the pipeline can fetch every source concurrently — `await` I/O inside it (e.g.
     `niquests.AsyncSession`); `build_sources` validates each `[sources.<name>]` table. A source may also define an optional `cli(cls) -> typer.Typer` for
     source-specific CLI verbs (the `mta` source ships `source mta list-stations`). Build on
-    `sources/toolkit.py` (`SourceError`). See `docs/sources.md`.
+    `sources/toolkit.py` (`SourceError`, `Secret`). See `docs/sources.md`.
 - **The `source` CLI subcommands are wired ahead of parsing.** typer has no native dynamic
   subcommands and its `TyperGroup`/vendored-click internals are unsupported, so `cli.py` mounts each
   source as a `source <name>` sub-typer *before* `app()` parses: the **bundled** sources at import
@@ -219,6 +219,24 @@ subcommand loads it on demand via `_config(ctx)`.
   bundled `glanceable`'s `GlanceableConfig` has a **required** `title` header plus `font` and
   `weather_temp_units`), not on the
   dashboard.
+- **`Secret` is the one way a plugin takes a credential.** Any plugin `Config` (source or layout)
+  types a credential field as `Secret`, imported from its own toolkit (`sources/toolkit.py` or
+  `render/toolkit.py`) — never from `config.py` directly. `Secret` takes **exactly one** of three
+  mutually-exclusive inputs (enforced by a `model_validator`): `value_from_cmd` (a shell command's
+  stdout), `value_from_env` (an env var name), or a literal — whose **TOML key is `value`** while the
+  field is `value_from_value` (aliased). That asymmetry is deliberate: it keeps the three sources
+  symmetrically named and frees `value` for the resolved accessor. Consumers read via the `value`
+  `cached_property` (`config.api_key.value`), which strips whitespace uniformly. Non-obvious
+  consequences:
+  - **Reads are lazy** (at use time, not validation), so loading a config never shells out or
+    requires the environment populated. A bad secret surfaces at fetch, not in `_config()`.
+  - **A successful read is cached; a failed one is not**, so a transient failure retries — but a
+    secret **rotated under a running process is not seen until it restarts**.
+  - **`value_from_cmd` runs `subprocess.run(shell=True, timeout=10)`.** Keep the timeout:
+    password-manager CLIs block on a passphrase prompt once their agent lock expires, and this app
+    runs unattended inside `asyncio.gather`, so an unbounded call would hang the event loop forever.
+  - The literal is a pydantic `SecretStr`, so it is masked in `repr` and in validation errors, and
+    the resolved value stays out of `model_dump()`. Don't log a resolved `.value`.
 - **Milestone-per-commit.** History is built as discrete milestones (data sources reworked into
   discovered plugins; the latest removed the LLM/OpenRouter backend entirely and made layouts own
   their config, mirroring the source plugin system), one feature/refactor per commit, Conventional

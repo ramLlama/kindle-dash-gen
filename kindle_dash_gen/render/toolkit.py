@@ -2,9 +2,10 @@
 
 A layout plugin draws :class:`~kindle_dash_gen.models.DashboardData` with Pillow at the
 device's native size. This module is the stable surface a plugin builds on: font resolution
-(:class:`Fonts`), the ink/paper constants, a shrink-to-fit helper (:func:`fit_font`), and an asset
-loader (:func:`load_asset_image`). Everything the bundled ``glanceable`` layout uses comes from
-here, so any private plugin can be built (or ``glanceable`` recreated) with only this public API.
+(:class:`Fonts`), the ink/paper constants, a shrink-to-fit helper (:func:`fit_font`), an asset
+loader (:func:`load_asset_image`), and :class:`Secret` for a credential a layout's config needs.
+Everything the bundled ``glanceable`` layout uses comes from here, so any private plugin can be
+built (or ``glanceable`` recreated) with only this public API.
 """
 
 from __future__ import annotations
@@ -13,6 +14,10 @@ import subprocess
 from importlib.resources import files
 
 from PIL import Image, ImageFont
+
+# Re-exported so a layout's Config can type a credential field as ``Secret`` without reaching into
+# app config internals (see docs/sources.md).
+from ..config import Secret
 
 # Display formatters re-exported as part of the public plugin surface. Layouts must render through
 # these (never convert units themselves) to honor the "SI internally, round at display" invariant;
@@ -34,6 +39,7 @@ __all__ = [
     "PAPER",
     "Fonts",
     "LayoutError",
+    "Secret",
     "fit_font",
     "load_asset_image",
     "aqi_is_unhealthy",
