@@ -26,7 +26,7 @@ class Secret(BaseModel):
 
         api_key = { value = "sk-live-..." }
         api_key = { value_from_cmd = "pass show 511" }
-        api_key = { value_from_env = "KDG_511_API_KEY" }
+        api_key = { value_from_env = "SF511_API_KEY" }
 
     Consumers read the secret as :attr:`value` (``config.api_key.value``); the literal *input* is
     spelled ``value`` in TOML but stored as ``value_from_value``, keeping the three sources

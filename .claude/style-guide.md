@@ -19,8 +19,8 @@ live in `pyproject.toml` (`[tool.ruff]`).
   `_quantize_lut`, `_fit`). Public API is the un-prefixed surface.
 - Domain error classes are named `<Thing>Error`. Source-fetch errors subclass the shared
   `SourceError` (in `sources/toolkit.py`) so the pipeline can isolate any source generically —
-  `WeatherError`, `MtaError`. Other error types subclass `RuntimeError` directly (`LayoutError`,
-  `SourceError` itself).
+  `WeatherError`, `OpenMeteoError`, `MtaError`, `SfBay511Error`. Other error types subclass
+  `RuntimeError` directly (`LayoutError`, `SourceError` itself).
 - Module-level constants for external vocab / literals: `NWS_API`, `_LINE_TO_URL`,
   `_RAIN_KEYWORDS`, `_DIRECTION_SUFFIXES`. This extends to an exception tuple a module swallows
   repeatedly: name it (`_ALERT_TIME_SWALLOW = (ValueError, TypeError)`) rather than writing a bare
@@ -40,6 +40,18 @@ live in `pyproject.toml` (`[tool.ruff]`).
   `ZoneInfo` on the config model so pydantic validates the IANA name at load time.
 - Prefer precise unions and `Literal[...]` for closed sets (`Literal["us", "si", "both"]`,
   `PostProcessMethod = Literal["resize", "crop", "pad"]`).
+- **Map an enum with `match`, not a dict.** When every member of an enum needs an entry (a label, a
+  companion type, a URL), write a `match` over the members with a `return` per arm. mypy
+  (`[tool.mypy]` in `pyproject.toml`, `files = ["kindle_dash_gen"]`) then enforces exhaustiveness
+  statically: adding a member without an arm is a "Missing return statement" at check time, where a
+  dict lookup only blows up with a `KeyError` at runtime, and only once that member is first
+  exercised. `Agency.label` and `direction_enum()` in `sources/builtins/sf_bay_511/model.py` are
+  the worked examples; this rule let a runtime "every member has an entry" test be deleted.
+- **`StrEnum` members from different enums can compare and hash equal.** Two `StrEnum`s sharing a
+  value (`BartDirection.NORTH` and `MuniDirection.NORTH` are both `"N"`) are interchangeable to
+  `==` and as dict keys. When the distinction matters, check the **type** (`isinstance`, or
+  `type(a) is type(b)`) and don't key a single flat dict by values drawn from more than one of
+  them. See the `sf-bay-511` direction model.
 
 ## Functions & Docstrings
 

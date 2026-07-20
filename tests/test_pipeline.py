@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 from PIL import Image
+from pydantic import BaseModel, ConfigDict
 
 from kindle_dash_gen import pipeline
 from kindle_dash_gen.config import Config
@@ -276,3 +277,51 @@ def test_run_once_skips_render_when_all_sources_down(tmp_path, monkeypatch) -> N
     assert result.written == []  # signals "nothing written"
     assert result.failed == []  # skipped, not failed — a one-shot should still exit 0
     assert path.read_bytes() == b"PREVIOUS-IMAGE"  # last image preserved
+
+
+def test_a_source_failing_in_init_is_isolated_like_any_other(monkeypatch, tmp_path) -> None:
+    """Construction happens inside the per-source coroutine, so it gets the same isolation as fetch.
+
+    Building the sources in ``gather``'s argument list instead would run every ``__init__`` eagerly
+    while the generator is unpacked — outside what ``return_exceptions`` covers. One raising there
+    (a source reading a credential, say) would take down the whole run and strand its siblings'
+    coroutines un-awaited, rather than dropping just that source.
+    """
+    from kindle_dash_gen.sources import registry as registry_mod
+    from kindle_dash_gen.sources.registry import register_source
+    from kindle_dash_gen.sources.toolkit import SourceError
+
+    class _Config(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+    class _ExplodesOnConstruction:
+        Config = _Config
+
+        def __init__(self, config: _Config) -> None:
+            raise SourceError("credential unreadable")
+
+        async def fetch(self, now):  # never reached
+            raise AssertionError("fetch should not run")
+
+    class _Healthy:
+        Config = _Config
+
+        def __init__(self, config: _Config) -> None:
+            pass
+
+        async def fetch(self, now):
+            return StationBoard(name="Survivor", arrivals_by_direction={})
+
+    saved = dict(registry_mod._SOURCES)
+    try:
+        register_source("explodes", _ExplodesOnConstruction)
+        register_source("healthy", _Healthy)
+        cfg = _config(tmp_path)
+        cfg.sources = {"explodes": {}, "healthy": {}}
+        data = asyncio.run(pipeline.gather(cfg))
+    finally:
+        registry_mod._SOURCES.clear()
+        registry_mod._SOURCES.update(saved)
+
+    # The bad source is dropped; the healthy one still contributed.
+    assert [t.__name__ for t in data.source_data] == ["StationBoard"]

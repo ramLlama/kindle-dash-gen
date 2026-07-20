@@ -2,11 +2,13 @@
 
 ## What This Project Does
 
-A Python CLI that periodically generates a Kindle e-ink dashboard image for NYC. It pulls the
-local NWS weather forecast plus real-time MTA subway arrivals, renders the whole dashboard with a
-deterministic local **pillow** layout, post-processes the resulting PNG for a Kindle Voyage
+A Python CLI that periodically generates Kindle e-ink dashboard images. It pulls weather (NWS,
+Open-Meteo) and real-time transit arrivals (MTA subway, SF Bay Area 511), renders each dashboard
+with a deterministic local **pillow** layout, post-processes the resulting PNG for a Kindle Voyage
 (grayscale, exact pixel dimensions, 16 hardware gray levels), and writes it to a configured path
-for syncing to the device. Intended to run unattended on an interval (e.g. every 5 minutes).
+for syncing to the device. Intended to run unattended on an interval (e.g. every 5 minutes). One
+run can serve dashboards for **different regions** — a single shared fetch feeds every configured
+dashboard, and each layout converts the aware-UTC data to its own display timezone.
 
 ## Tech Stack
 
@@ -14,8 +16,8 @@ for syncing to the device. Intended to run unattended on an interval (e.g. every
 - **uv** for env/deps. The project is `package = false` — run in place, never installed.
 - **typer** `0.26.*` — CLI framework
 - **pydantic** `2.*` — config validation (`extra="forbid"` on every model)
-- **niquests** `3.*` — HTTP client (NWS + Open-Meteo; uses `AsyncSession` for concurrent fetches);
-  `niquests-mock` in tests
+- **niquests** `3.*` — HTTP client (NWS, Open-Meteo, 511; uses `AsyncSession` for concurrent
+  fetches); `niquests-mock` in tests
 - **nyct-gtfs** `2.*` — MTA GTFS-realtime feed parsing
 - **pillow** `12.*` — the rendering layout and image post-processing
 - **fontconfig** (`fc-match`, system tool) — a layout resolves a font family name to a file;
@@ -34,7 +36,8 @@ kindle_dash_gen/
   models/              # frozen dataclasses (domain models, no presentation)
     dashboard_data.py  # DashboardData (source_data keyed by produced type) — the only model here
   sources/             # data-source plugins (source-side mirror of render/)
-    toolkit.py         # public plugin API: SourceError (base all source errors subclass) + Secret
+    toolkit.py         # public plugin API: SourceError (base all source errors subclass), Secret,
+                       #   source_config(ctx, name, Config) for a source's own cli() verbs
     registry.py        # Source protocol, register_source, build_sources() dispatch
     builtins/          # bundled source plugins (discovered, not special-cased)
       nws/             # "nws" source (three-file package):
@@ -50,6 +53,12 @@ kindle_dash_gen/
         source.py      #   MtaSource (+ cli() verb `list-stations`) + MtaConfig (Platform/Station) + MtaClient
         model.py       #   MtaData (+ Direction, StationBoard, TrainArrival) — the produced data class
         assets/stations.csv  #   bundled station lookup (for `source mta list-stations`)
+      sf_bay_511/      # "sf-bay-511" source (three-file package, keyed — first Secret consumer):
+        __init__.py    #   imports source.py -> register_source("sf-bay-511", SfBay511Source)
+        source.py      #   SfBay511Source (+ cli() verbs `list-stops`, `agencies`) + SfBay511Config
+                       #     (Board/StopRequest) + SfBay511Client (async SIRI StopMonitoring)
+        model.py       #   SfBay511Data (+ Agency, per-agency Direction enums, StopBoard,
+                       #     TransitArrival) — the produced data class
   render/              # turn data into a Kindle-ready PNG (pillow layout + post-process)
     layout.py          # Layout protocol (owns its Config), register/validate/build_layout, render()
     toolkit.py         # layout public plugin API (Fonts, INK/PAPER, fit_font, assets, format helpers, Secret)
@@ -81,7 +90,17 @@ docs/sources.md        # how to write a data-source plugin (the public contract)
   GTFS base stop id + the lines serving it) into per-direction arrival lists. Example: "Union Sq"
   merges the N/Q/R/W, 4/5/6, and L platforms into one board. Boards are **uncapped** — the layout
   decides how many arrivals to show at render.
-- **Direction** is a `StrEnum` with values `"N"`/`"S"` (GTFS uptown/downtown, nominal for the L).
+- **Direction** (mta) is a `StrEnum` with values `"N"`/`"S"` (GTFS uptown/downtown, nominal for
+  the L). The `sf-bay-511` source has its own, unrelated per-agency direction enums (below).
+- **SfBay511Data** (`sources/builtins/sf_bay_511/model.py`) wraps `list[StopBoard]` (as `.boards`),
+  the same single-typed-value shape as `MtaData`. A **Board** (config) merges one or more
+  **StopRequest**s — an `Agency` + that operator's `stopcode`, plus an optional `lines` allowlist —
+  into one display board; boards are **uncapped**, the layout decides how many arrivals to show.
+  Direction is typed **per agency**: an `Agency` StrEnum (`BART`=BA, `MUNI`=SF, `CALTRAIN`=CT,
+  `AC_TRANSIT`=AC) and a separate enum per operator — `BartDirection`/`CaltrainDirection` (N/S),
+  `MuniDirection` (IB/OB **plus** N/S, since Muni's feed emits both), `AcTransitDirection`
+  (N/S/E/W) — unioned as `Direction` and disambiguated by each arrival's `agency` field. See the
+  gotcha below: these enums are **not disjoint by value**.
 - **NwsData** (`sources/builtins/nws/model.py`) carries current conditions, `today` and `tomorrow`
   (each a `DailyHighLow(day, high, low)` — both days always present, readings `None` when unknown;
   each source owns its own copy of this class, like every other type), upcoming hours, and active
@@ -123,8 +142,12 @@ provider type. The hero draws the AQI badge (`format_aqi`) and the most-severe a
 (`+N more` tail) through one shared `_metric_row`, which flags an alert — or an "Unhealthy"-or-worse
 AQI (`aqi_is_unhealthy`, EPA 151+) — in bold behind the bundled `warning.png` icon.
 
+No layout draws `SfBay511Data` yet — `glanceable`'s transit panel still renders **MTA boards only**,
+so a `sf-bay-511` source is gathered and available in `source_data` but not yet displayed.
+
 See [architecture.md](architecture.md) for data flow, the NWS multi-step fetch, the Open-Meteo
-concurrent forecast+AQI fetch, MTA feed deduplication, and the layout/post-process details.
+concurrent forecast+AQI fetch, MTA feed deduplication, the 511 stop fan-out, and the
+layout/post-process details.
 
 ## Development Workflow
 
@@ -138,9 +161,10 @@ uv run python -m kindle_dash_gen --config config.toml dashboard render out.png  
 uv run python -m kindle_dash_gen --config config.toml run --one-shot            # one iteration
 uv run python -m kindle_dash_gen --config config.toml run                       # loop
 
-# Verification gates (both must pass):
+# Verification gates (all must pass; pre-commit runs the same three):
 uv run pytest
 uv run ruff check .
+uv run mypy
 ```
 
 Global `--config` / `-c` defaults to `config.toml`; it is stored on the typer context and each
@@ -182,6 +206,42 @@ subcommand loads it on demand via `_config(ctx)`.
   the same zone `fromtimestamp` rendered it in, so the two cancel and the exact original instant is
   recovered regardless of host zone (exact across DST fall-back too — `fromtimestamp` sets `fold`
   and `astimezone` honors it). This is why **no nyct_gtfs internals are touched**; don't "fix" it.
+- **The 511 per-agency direction enums are NOT disjoint by value.** `BartDirection.NORTH` and
+  `MuniDirection.NORTH` are both the string `"N"` and, being `StrEnum`s, compare **and hash** equal.
+  Only the enum *type* distinguishes them. Three consequences, each of which looks like needless
+  ceremony until you know this:
+  - `_check_direction` is **`isinstance`-based**, not an equality/membership check.
+  - `StopBoard.arrivals` nests **agency → direction → arrivals**. A flat direction-keyed dict would
+    silently collide two operators' northbound arrivals into one bucket.
+  - `BartDirection` and `CaltrainDirection` are **kept distinct despite being identical** (both
+    N/S). Collapsing them into an alias would defeat the per-agency type check. Do not "simplify"
+    this — there is a test pinning it.
+- **`Agency.label` and `direction_enum(agency)` use `match`, not a dict**, deliberately: `match`
+  over enum members gives *static* exhaustiveness, so adding an `Agency` member without a label or
+  a direction vocabulary is a mypy "Missing return statement" at check time rather than a
+  `KeyError` once that agency is first configured. Verified empirically; this replaced a runtime
+  "every agency has an entry" test. See [style-guide.md](style-guide.md).
+- **511's `ParentStation` ids are NOT `StopMonitoring` stopcodes.** A stopcode is one *platform*,
+  which for rail means one *direction*, so a two-direction board must merge the platform stopcodes
+  (Embarcadero = 901161 southbound + 901162 northbound). Querying the parent id (901169) instead
+  returns a grab-bag spanning 16 different stations. Multi-stop board merging is therefore the
+  **normal case for rail**, not an edge case — don't "simplify" a board down to one parent id.
+  `source sf-bay-511 list-stops` dumps code / platform / parent / name live so the right codes can
+  be grepped out.
+- **511 specifics that must not regress.** (a) **HTTPS**, not the `http://` URLs 511's own docs
+  print — the API key travels as a **query parameter**, so plaintext would leak it every polling
+  interval (caught in review). (b) The fetch is **all-or-nothing**: any request failing fails the
+  whole source, because a half-populated board reads as "nothing more is coming" rather than "we
+  don't know", and the pipeline already degrades a missing source gracefully. (c) Requests are
+  **deduped per distinct `(agency, stopcode)`** — the default rate limit is 60/hour/key, about four
+  stops at the 5-minute interval. (d) Bodies are decoded `utf-8-sig`: 511 prefixes its JSON with a
+  BOM that a plain UTF-8 decode carries into the first key. (e) A shared `_as_list` normalizes
+  SIRI-JSON's object-or-array collapse for **both** the delivery and the visit list (a stop with
+  exactly one train due is the case that would otherwise iterate a dict's string keys).
+  (f) Over half a live BART station's visits have `LineRef` **and** `DirectionRef` null (scheduled
+  trips with no vehicle assigned) and are skipped; a *half*-null pair **raises**, since a frozen
+  dataclass does no runtime type checking and `line=None` would otherwise reach a layout.
+  Direction casing and surrounding whitespace are tolerated.
 - **Multiple dashboards, one fetch.** Config has `dashboards: dict[str, Dashboard]` (named
   `[dashboards.<name>]` tables). `gather()` runs once and every dashboard renders from that shared
   data to its own `output_path`.
@@ -202,12 +262,19 @@ subcommand loads it on demand via `_config(ctx)`.
     `build_sources`. Build on `render/toolkit.py` (`Fonts`, `INK`/`PAPER`, `fit_font`,
     `load_asset_image`, `LayoutError`, `Secret`). See `docs/plugins.md`.
   - **Sources** register via `register_source` at import, bundled root
-    `kindle_dash_gen.sources.builtins` (the `nws` and `mta` sources). A source is a `Source`
+    `kindle_dash_gen.sources.builtins` (the `nws`, `open-meteo`, `mta`, and `sf-bay-511` sources).
+    A source is a `Source`
     protocol class with a `Config` and an **async** `fetch(now)` (`async def fetch(self, now) -> Any`)
     so the pipeline can fetch every source concurrently — `await` I/O inside it (e.g.
     `niquests.AsyncSession`); `build_sources` validates each `[sources.<name>]` table. A source may also define an optional `cli(cls) -> typer.Typer` for
-    source-specific CLI verbs (the `mta` source ships `source mta list-stations`). Build on
-    `sources/toolkit.py` (`SourceError`, `Secret`). See `docs/sources.md`.
+    source-specific CLI verbs (`source mta list-stations`; `source sf-bay-511 list-stops` /
+    `agencies`). A `cli()` verb reads its **own** config by declaring `ctx: typer.Context` and
+    calling `source_config(ctx, name, ConfigCls)` rather than re-taking settings as flags — that is
+    how `list-stops` gets its API key, so a credential lives in exactly one place and any `Secret`
+    form keeps working. Only that source's slice is validated, so inspecting one source never fails
+    because an unrelated one is misconfigured. Build on
+    `sources/toolkit.py` (`SourceError`, `Secret`, `source_config` — note it imports `typer`).
+    See `docs/sources.md`.
 - **The `source` CLI subcommands are wired ahead of parsing.** typer has no native dynamic
   subcommands and its `TyperGroup`/vendored-click internals are unsupported, so `cli.py` mounts each
   source as a `source <name>` sub-typer *before* `app()` parses: the **bundled** sources at import
@@ -223,9 +290,17 @@ subcommand loads it on demand via `_config(ctx)`.
   wired at import); the local-source test calls `_wire_source_commands()` explicitly.
 
   Do **not** re-add a hardcoded builtin dict for either kind.
-- **Per-source isolation.** `gather()` fetches all sources concurrently
+- **Per-source isolation, including construction.** `gather()` fetches all sources concurrently
   (`asyncio.gather(..., return_exceptions=True)`) then reduces the results deterministically in
-  `build_sources` order. Each source's `SourceError` (subclasses: `WeatherError`, `MtaError`) drops
+  `build_sources` order. Each source is **constructed inside** its isolated coroutine
+  (`build_and_fetch`), not in the `gather` argument list — building there runs every `__init__`
+  eagerly while the generator is unpacked, *outside* the isolation `return_exceptions` provides, so
+  one source raising in `__init__` (reading a credential, say) killed the whole run and stranded
+  its siblings' coroutines un-awaited. Verified empirically; keep the construction inside.
+  Correspondingly, a source that needs a credential resolves its `Secret` in `fetch()`, not
+  `__init__`, and wraps a read failure in its own `SourceError` subclass (see `SfBay511Source`).
+  Each source's `SourceError` (subclasses: `WeatherError`, `OpenMeteoError`, `MtaError`,
+  `SfBay511Error`) drops
   just that source's data (logged) and the render proceeds with whatever remains. Only `SourceError`
   is swallowed; any other exception propagates (fail loud), and two sources producing the same data
   type is a misconfiguration and fails loud. If *every* source is empty (`len(source_data) == 0`), `run_once()` skips the

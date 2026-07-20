@@ -37,12 +37,23 @@ fits, and quantizes it into Kindle-ready PNG bytes.
   `DashboardData.generated_at` and is the `now` handed to every source), then iterates the
   discovered source plugins (`build_sources(cfg.sources)`
   resolves each `[sources.<name>]` to its plugin class + validated config), constructs and `fetch`es
-  every source **concurrently** via `asyncio.gather(..., return_exceptions=True)`, then reduces the
+  every source **concurrently** via `asyncio.gather(..., return_exceptions=True)` — both steps
+  inside a per-source `build_and_fetch` coroutine, so construction is isolated too (see below) —
+  then reduces the
   results **deterministically in `build_sources` order** (not completion order). A source that raises
   `SourceError` drops its data (logged) and the render proceeds; any other exception is *not*
   isolated and propagates (fail loud). It keys each non-`None` result by `type(result)` into
   `DashboardData.source_data`; a failed or empty source is simply absent. Two sources producing the
   same data type is a misconfiguration and raises (fail loud, not degrade).
+
+  **Construction happens inside the isolated coroutine, on purpose.** `build_and_fetch(cls, cfg)`
+  does `cls(cfg).fetch(now)`. Constructing in the `gather` argument list instead
+  (`*(cls(cfg).fetch(now) for ...)`) runs every `__init__` eagerly while the generator is unpacked,
+  *before* `asyncio.gather` is entered and therefore outside the isolation `return_exceptions`
+  provides: one source raising in `__init__` (a plugin reading a credential, say) took down the
+  whole run and left its siblings' coroutines created-but-never-awaited. Verified empirically. A
+  source that needs a credential should still resolve its `Secret` in `fetch()` and wrap a read
+  failure in its own `SourceError` subclass, so the failure is isolable rather than fatal.
 - **`run_once()`** (async) gathers once, then renders every `[dashboards.<name>]` from that shared
   data,
   each to its own `output_path`. It short-circuits when every source is empty
@@ -66,8 +77,14 @@ which it owns) — or a local `plugins_path` dir. Each registers a `Source` prot
 `[sources.<name>]` table. There is no shared cross-provider data model: each source owns its own
 produced type, and a layout reconciles multiple providers in its own adapter.
 `sources/registry.py` holds the empty registry, the `Source` protocol, and
-`build_sources()`; `sources/toolkit.py` exposes `SourceError`, the base every source error
-subclasses. `gather()` (above) drives them. See `docs/sources.md` for the contract. Below is what
+`build_sources()`; `sources/toolkit.py` exposes `SourceError` (the base every source error
+subclasses), `Secret`, and `source_config(ctx, name, ConfigCls)` — the helper a source's optional
+`cli()` verbs use to read their **own** validated `[sources.<name>]` slice off the `typer.Context`
+the global `--config` is recorded on, instead of re-taking settings as flags. Only that source's
+slice is validated, so inspecting one source doesn't fail because an unrelated source or dashboard
+is misconfigured; it is also how a keyed source's CLI verb reaches its credential without a second
+place to put one. (`toolkit.py` therefore imports `typer`.)
+`gather()` (above) drives the sources. See `docs/sources.md` for the contract. Below is what
 each bundled source does internally.
 
 ### Datetimes: aware UTC across every boundary
@@ -207,6 +224,82 @@ converts it for display. `tests/test_mta.py` asserts this by actually moving the
 `feed_loader` is an injectable async seam for tests (`Callable[[str], Awaitable[NYCTFeed]]`); the
 default builds `NYCTFeed(url, fetch_immediately=False)` then `await feed.refresh_async()`.
 
+### SF Bay Area transit (sources/builtins/sf_bay_511/)
+
+The `sf-bay-511` source (`SfBay511Source` + `SfBay511Config`, in `source.py`) wraps
+`SfBay511Client` and produces `SfBay511Data` (`.boards`, in `model.py`); `SfBay511Error` subclasses
+`SourceError`. It is the **first consumer of `Secret`**: `SfBay511Config` is `api_key: Secret`,
+`boards: dict[str, Board]`, `timeout`. 511 is a regional aggregator — one keyed API covers every
+Bay Area operator, selected per request by an `agency` code — and its SIRI `StopMonitoring` JSON
+already resolves stop, line, direction, headsign, and both predicted and scheduled times, so unlike
+a GTFS-realtime feed it needs no static-schedule join.
+
+`SfBay511Client.fetch(now)` collects the **distinct `(agency, stopcode)` pairs** across all boards,
+fans them out concurrently on one `niquests.AsyncSession`, then builds each board from the
+in-memory result map (pure CPU, no per-board requests). Shaping constraints:
+
+- **`stopcode` is always sent.** Omitting it returns the operator's entire network (Muni alone is
+  ~35k arrivals, AC Transit ~12MB).
+- **Requests are deduped**, because the default rate limit is 60/hour/key — about four distinct
+  stops at the 5-minute interval. Two boards watching the same stop cost one request.
+- **All-or-nothing.** `asyncio.gather(..., return_exceptions=True)` lets every request settle, then
+  the first exception is re-raised, failing the whole source. A partially-populated board is worse
+  than none: it reads as "nothing else is coming" rather than "we don't know", and the pipeline
+  already degrades a missing source gracefully.
+- **HTTPS, deliberately** — 511's own docs print `http://` URLs, but the key travels as a query
+  parameter, so plaintext would put the credential on the wire every polling interval.
+
+`SfBay511Source.fetch` resolves `api_key.value` **there, not in `__init__`**, wrapping a read
+failure as `SfBay511Error` so an unreadable credential is an isolable source failure rather than an
+exception escaping mid-construction (see the `gather()` note above).
+
+**Parsing** (`_parse_visit`) returns `None` for a visit that is unassigned, filtered out by the
+board's optional `lines` allowlist, has no usable time, or has already departed; a *malformed*
+visit raises, so a shape change surfaces instead of quietly emptying the board. Two live-API
+realities the initial mocked tests missed, both of which caused real failures:
+
+- **Over half of a live BART station's visits have `LineRef` *and* `DirectionRef` null** —
+  scheduled trips with no vehicle assigned. There is nothing to draw for one, so they are skipped.
+  A *half*-null pair raises instead: a frozen dataclass does no runtime type checking, so
+  `line=None` would sail through and reach a layout as a missing route badge.
+- **`ParentStation` ids from the `stops` endpoint are not `StopMonitoring` stopcodes.** A stopcode
+  is one *platform*, which for rail means one *direction*, so a two-direction board merges the two
+  platform stopcodes (Embarcadero = 901161 southbound + 901162 northbound). Querying the parent id
+  (901169) returns a grab-bag spanning 16 different stations. **Multi-stop board merging is the
+  normal case for rail**, not an edge case.
+
+Other parsing details: bodies decode as `utf-8-sig` (511 prefixes its JSON with a BOM that a plain
+UTF-8 decode carries into the first key and `json.loads` then rejects); a shared `_as_list`
+normalizes SIRI-JSON's object-or-array collapse for **both** the delivery and the visit list (a
+stop with exactly one train due — late evening, precisely when a board matters — would otherwise
+iterate a dict's string keys); direction casing and surrounding whitespace are normalized, since
+under an all-or-nothing fetch a cosmetic `"n"`-for-`"N"` change would blank the board. Times parse
+via `fromisoformat` (511 stamps UTC with a `Z`) and normalize to aware UTC.
+
+**Per-agency direction typing** is the model's defining decision. `Agency` (BART=BA, MUNI=SF,
+CALTRAIN=CT, AC_TRANSIT=AC) pairs with a *separate* direction enum per operator —
+`BartDirection`/`CaltrainDirection` (N/S), `MuniDirection` (IB/OB plus N/S, since Muni's feed emits
+both), `AcTransitDirection` (N/S/E/W) — unioned as `Direction` and disambiguated by an arrival's
+`agency`. The critical subtlety: **these enums are not disjoint by value.** `BartDirection.NORTH`
+and `MuniDirection.NORTH` are both the string `"N"` and, as `StrEnum`s, compare *and hash* equal;
+only the enum **type** distinguishes them. Hence:
+
+- `_check_direction` is `isinstance`-based, and `StopBoard.__post_init__` compares
+  `type(...) is not type(...)` rather than trusting `==`.
+- `StopBoard.arrivals` nests **agency → direction → arrivals**; a flat direction-keyed dict would
+  collide two operators' northbound arrivals.
+- BART and Caltrain keep **distinct** enums despite both being N/S. Collapsing them into an alias
+  would defeat the type check. A test pins this.
+
+`Agency.label` and `direction_enum(agency)` use `match` over the members rather than a dict, to get
+**static exhaustiveness**: a new `Agency` without a label or a direction vocabulary is a mypy
+"Missing return statement" at check time, not a `KeyError` once that agency is first configured.
+Verified empirically; this replaced a runtime "every agency has an entry" test.
+
+`cli()` mounts two verbs: `list-stops` (live, dumps code / platform / parent / name for an
+operator — queried rather than bundled because 511 covers 40+ operators whose stop lists rot, and
+it reads its key via `source_config`) and `agencies` (the operator codes this source understands).
+
 ## Render
 
 A single renderer: a named **layout** draws `DashboardData` with Pillow and returns a raw `Image`;
@@ -305,7 +398,9 @@ changes the pixels.
   its plugin's own `Config` model (the `nws` plugin's `NwsConfig`: `latitude`, `longitude`,
   `user_agent`, `hourly_hours`; the keyless `open-meteo` plugin's `OpenMeteoConfig`:
   `latitude`, `longitude`, `hourly_hours` — no `user_agent`; the `mta` plugin's
-  `MtaConfig`: `stations`, whose `Station`/`Platform` models also live in that plugin). An unknown
+  `MtaConfig`: `stations`, whose `Station`/`Platform` models also live in that plugin; the
+  `sf-bay-511` plugin's `SfBay511Config`: `api_key` (a `Secret`), `boards`, `timeout`, whose
+  `Board`/`StopRequest` models likewise live in that plugin). An unknown
   source name or key fails fast
   there. Zero sources is valid. The old top-level `[location]`, `[weather]`, `[stations.*]` sections
   are gone.

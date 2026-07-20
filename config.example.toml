@@ -8,7 +8,8 @@
 # plugins_path = "/home/you/kindle-dash-gen-nyc/kindle_dash_gen_nyc_plugins"
 
 # Data sources are plugins, each configured by a [sources.<name>] table whose key is the source's
-# registered name. The bundled sources are "nws" (weather) and "mta" (subway). Configure only the
+# registered name. The bundled sources are "nws" and "open-meteo" (weather), "mta" (NYC subway),
+# and "sf-bay-511" (SF Bay Area transit). Configure only the
 # ones you want; zero sources is valid (every render then skips, keeping the last image). Each
 # source validates its own table strictly (unknown keys are rejected). See docs/sources.md.
 
@@ -68,6 +69,46 @@ hourly_hours = 4       # number of upcoming hourly forecasts to include
   lines = ["F", "M"]
   stop_id = "D19"
   direction = "both"
+
+# The "sf-bay-511" source: SF Bay Area transit arrivals (BART, Muni, Caltrain, AC Transit) from
+# 511.org. Needs a free API key — request one at https://511.org/open-data/token. The key is a
+# Secret, so it can stay out of this file (see docs/sources.md):
+#
+#   api_key = { value = "your-key" }                     # literal
+#   api_key = { value_from_cmd = "pass show 511" }       # a password manager
+#   api_key = { value_from_env = "SF511_API_KEY" }     # an environment variable (any name)
+#
+# RATE LIMIT: 60 requests/hour/key by default, and each distinct stopcode costs one request per
+# run. At the 5-minute interval below, 5 stops is exactly the ceiling — budget 4 so a `list-stops`
+# lookup or a retry doesn't tip you over. Past that, raise `interval_minutes` or ask 511 for a
+# higher limit. Stops shared between boards are only fetched once.
+#
+# Finding stopcodes: `python -m kindle_dash_gen source sf-bay-511 list-stops --agency BA`
+# prints "stopcode  platform  parent  name" (and `... agencies` lists the operator codes). It
+# reads the api_key from this table, so it works as soon as the source below is configured.
+# Two gotchas that list makes obvious:
+#   * A stopcode is one *platform*, which for rail usually means one direction. Merge the two
+#     platform codes under one board to get both, as with Embarcadero below.
+#   * The "parent" column is NOT a stopcode. Querying a parent id returns a grab-bag spanning many
+#     stations, so always use the per-platform codes.
+#
+# [sources.sf-bay-511]
+# api_key = { value_from_env = "SF511_API_KEY" }
+#
+#   [sources.sf-bay-511.boards."Embarcadero"]
+#   # display_name = "Embc"                # optional label; the key stays the canonical name
+#
+#     [[sources.sf-bay-511.boards."Embarcadero".stops]]
+#     agency = "BA"                        # BART
+#     stopcode = "901161"                  # platform 1 — southbound
+#
+#     [[sources.sf-bay-511.boards."Embarcadero".stops]]
+#     agency = "BA"
+#     stopcode = "901162"                  # platform 2 — northbound
+#
+#   # A board can merge operators too, for one place served by several (add a Muni stop here).
+#   # `lines` optionally narrows a busy stop to the routes you care about:
+#   #   lines = ["N", "38R"]
 
 # One or more output dashboards, each keyed by a name ([dashboards.<name>]). A single run gathers
 # every source's data once and renders every dashboard from it, writing each to its own path.

@@ -20,6 +20,12 @@ Run with `uv run pytest` (config in `pyproject.toml`: `testpaths = ["tests"]`,
   zones and compare) and restores `TZ` + `time.tzset()` in teardown — that state is process-global,
   so a leak would surface as an unrelated test failing depending on ordering. Used by
   `test_layout.py` and `test_mta.py`.
+- **Hand-written fixtures under-represent a live feed.** Tests are offline, so a mock payload only
+  contains the shapes its author thought of. Two `sf-bay-511` failures shipped this way: over half a
+  real BART station's visits carry a null `LineRef`/`DirectionRef` pair (no fixture had one), and a
+  rail stopcode is a single *platform*, so a fixture with one stop per board hid that a
+  two-direction board must merge two stopcodes. When adding a source, hit the real endpoint once
+  by hand, then encode what you actually saw — especially the *proportions* — as fixtures.
 - **Config in tests** is built with `Config.model_validate(CONFIG_DICT)` from an inline dict
   (see `tests/test_pipeline.py`), not by loading a TOML file.
 - **Real image assertions.** Pillow-touching tests assert against actual decoded output
@@ -47,6 +53,13 @@ Run with `uv run pytest` (config in `pyproject.toml`: `testpaths = ["tests"]`,
   derivation.
 - `test_mta.py` — MTA (`mta` source) feed dedup/reuse, platform merging, per-direction sort, error
   paths, and that arrivals come out as the same aware-UTC instant regardless of the host zone.
+- `test_sf_bay_511.py` — 511 (`sf-bay-511` source) visit parsing, one-request-per-distinct-stopcode
+  dedup, multi-stop/multi-agency board merging, the `lines` filter, all-or-nothing failure, BOM and
+  object-or-array response shapes, and `Secret` resolution (including that an unreadable key is a
+  `SfBay511Error`, not a crash). Two model invariants are pinned deliberately: that **BART and
+  Caltrain directions stay distinct types** (they are value-equal, so only the type check catches a
+  mis-filed arrival) and that a direction from another agency is rejected. There is no runtime
+  "every `Agency` has a label" test — `match`-based exhaustiveness makes that a mypy error instead.
 - `test_postprocess.py` — grayscale/fit/quantize, each `method`, gray-level LUT.
 - `test_config.py` — pydantic validation, `extra="forbid"`, the reshaped `Dashboard` (output spec
   + raw `layout_config`).

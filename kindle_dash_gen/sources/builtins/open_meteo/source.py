@@ -115,7 +115,6 @@ class OpenMeteoClient:
     def _build(self, forecast: dict, aqi: dict) -> OpenMeteoData:
         try:
             cur = forecast["current"]
-            # ^ can you set the request timezeon to utc?
             # Timestamps arrive naive in the location's own zone (timezone=auto). The response also
             # names that zone, which is what turns them into the aware UTC every source returns.
             # Local wall-clock time is *not* lost: a layout converts back for display.

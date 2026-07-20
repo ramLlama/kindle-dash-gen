@@ -16,13 +16,14 @@ from pathlib import Path
 from typing import Any
 
 from PIL import Image
+from pydantic import BaseModel
 
 from . import plugins
 from .config import Config, Dashboard
 from .models import DashboardData
 from .render import layout
 from .render.postprocess import post_process
-from .sources.registry import SourceError, build_sources
+from .sources.registry import Source, SourceError, build_sources
 
 log = logging.getLogger(__name__)
 
@@ -45,8 +46,19 @@ async def gather(cfg: Config) -> DashboardData:
     now = datetime.now(UTC)
     resolved = build_sources(cfg.sources)
     names = list(resolved)
+
+    async def build_and_fetch(source_cls: type[Source[Any]], source_cfg: BaseModel) -> Any:
+        """Construct the source *and* fetch it, both inside the isolated coroutine.
+
+        Constructing in the ``gather`` argument list instead would run every ``__init__`` eagerly,
+        while the generator is unpacked — outside the isolation ``return_exceptions`` provides. One
+        source raising there (a plugin reading a credential, say) would take down the whole run and
+        strand its siblings' coroutines un-awaited.
+        """
+        return await source_cls(source_cfg).fetch(now)
+
     results = await asyncio.gather(
-        *(source_cls(source_cfg).fetch(now) for source_cls, source_cfg in resolved.values()),
+        *(build_and_fetch(cls, source_cfg) for cls, source_cfg in resolved.values()),
         return_exceptions=True,
     )
 

@@ -64,6 +64,21 @@ name) to help fill in `[sources.mta]`.
 See [`config.example.toml`](config.example.toml). Data sources and render layouts are both plugins;
 see [`docs/sources.md`](docs/sources.md) and [`docs/plugins.md`](docs/plugins.md).
 
+### SF Bay Area transit
+
+The `sf-bay-511` source covers BART, Muni, Caltrain, and AC Transit via [511.org](https://511.org/open-data/transit),
+which needs a [free API key](https://511.org/open-data/token). Both verbs below read that key
+from your configured `[sources.sf-bay-511]` table:
+
+```sh
+uv run python -m kindle_dash_gen source sf-bay-511 agencies
+uv run python -m kindle_dash_gen source sf-bay-511 list-stops --agency BA
+```
+
+The default rate limit is 60 requests/hour and each distinct stop costs one request per run, so
+the 5-minute default interval leaves room for about four stops (five is exactly the ceiling, and
+`list-stops` draws from the same budget).
+
 ### Upgrading an existing config
 
 Config is strict (unknown keys are rejected), so these fail fast at startup with a clear message

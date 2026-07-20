@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, date, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
@@ -408,6 +409,102 @@ def test_source_mta_list_stations(tmp_path) -> None:
     result = runner.invoke(app, ["--config", cfg, "source", "mta", "list-stations"])
     assert result.exit_code == 0, result.output
     assert "Union Sq" in result.output  # a known station in the bundled table
+
+
+def test_source_sf_bay_511_agencies(tmp_path) -> None:
+    # A source-defined verb needing neither config nor network.
+    cfg = str(_write(tmp_path, MTA_ONLY))
+    result = runner.invoke(app, ["--config", cfg, "source", "sf-bay-511", "agencies"])
+    assert result.exit_code == 0, result.output
+    assert "BART" in result.output  # the readable label, not "Bart" or the "BA" code
+
+
+SF511_ONLY = """
+[sources.sf-bay-511]
+api_key = { value = "cfg-key" }
+
+[sources.sf-bay-511.boards."Embarcadero"]
+  [[sources.sf-bay-511.boards."Embarcadero".stops]]
+  agency = "BA"
+  stopcode = "901162"
+
+[dashboards.main]
+output_path = "./out/dashboard.png"
+[dashboards.main.layout_config]
+title = "SF"
+timezone = "America/Los_Angeles"
+"""
+
+
+def test_source_sf_bay_511_list_stops(tmp_path, monkeypatch) -> None:
+    # `list-stops` is live-only (511 has 40+ operators whose stop lists change). The key comes from
+    # the configured source table, so there is no second place to put a credential.
+    import niquests
+
+    stops = {
+        "Contents": {
+            "dataObjects": {
+                "ScheduledStopPoint": [
+                    {
+                        "id": "901162",
+                        "Name": "Embarcadero",
+                        "Extensions": {"PlatformCode": "2", "ParentStation": "901169"},
+                    }
+                ]
+            }
+        }
+    }
+
+    sent = {}
+
+    class _Resp:
+        content = json.dumps(stops).encode("utf-8")
+
+        def raise_for_status(self):
+            return None
+
+    def _get(url, params=None, **kw):
+        sent.update(params or {})
+        return _Resp()
+
+    monkeypatch.setattr(niquests, "get", _get)
+    cfg = str(_write(tmp_path, SF511_ONLY))
+    result = runner.invoke(
+        app, ["--config", cfg, "source", "sf-bay-511", "list-stops", "--agency", "BA"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "901162" in result.output
+    assert "Embarcadero" in result.output
+    assert sent["api_key"] == "cfg-key"  # taken from the config's Secret, not a flag
+
+
+def test_source_sf_bay_511_list_stops_needs_the_source_configured(tmp_path) -> None:
+    # Without a [sources.sf-bay-511] table there is no key to use; say so instead of tracebacking.
+    cfg = str(_write(tmp_path, MTA_ONLY))
+    result = runner.invoke(
+        app, ["--config", cfg, "source", "sf-bay-511", "list-stops", "--agency", "BA"]
+    )
+    assert result.exit_code != 0
+    assert "Traceback" not in result.output
+
+
+def test_source_sf_bay_511_list_stops_reports_a_bad_response_cleanly(tmp_path, monkeypatch) -> None:
+    # A parse failure must render as a typer error, not a bare traceback.
+    import niquests
+
+    class _Resp:
+        content = b'{"unexpected": true}'
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr(niquests, "get", lambda *a, **kw: _Resp())
+    cfg = str(_write(tmp_path, SF511_ONLY))
+    result = runner.invoke(
+        app, ["--config", cfg, "source", "sf-bay-511", "list-stops", "--agency", "BA"]
+    )
+    assert result.exit_code != 0
+    assert "Traceback" not in result.output
 
 
 def test_source_name_errors_when_registered_but_not_configured(tmp_path) -> None:

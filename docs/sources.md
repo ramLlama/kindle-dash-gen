@@ -3,7 +3,8 @@
 A **source** fetches one kind of data (weather, subway arrivals, …) and contributes it to the
 dashboard. Sources are plugins, exactly like render [layouts](plugins.md): the registry starts empty
 and every source — including the bundled `nws` (US weather), `open-meteo` (global weather + air
-quality), and `mta` (subway) — registers itself the same way. There is no privileged builtin. You can add your own source locally without touching the
+quality), `mta` (NYC subway), and `sf-bay-511` (SF Bay Area transit) — registers itself the same
+way. There is no privileged builtin. You can add your own source locally without touching the
 app, and a private source has access to the same API the bundled ones use, so `nws`/`mta` could be
 recreated 1:1 as private plugins.
 
@@ -161,6 +162,25 @@ When a value is genuinely unknown, report `None` rather than substituting a near
 day's daytime period once it has passed, so from that evening today's high is unknown; reporting
 `None` is honest, where falling forward to the next available period would return *tomorrow's* high
 labelled with today's date.
+
+## CLI verbs that need config (`source_config`)
+
+A verb defined in your source's `cli()` reaches your own `[sources.<name>]` table through the
+toolkit, rather than re-taking settings as flags:
+
+```python
+from kindle_dash_gen.sources.toolkit import source_config
+
+@app.command("list-stops")
+def list_stops(ctx: typer.Context, agency: str = typer.Option(...)) -> None:
+    config = source_config(ctx, "my_source", MyConfig)
+    ...  # config.api_key.value, config.endpoint, whatever your Config declares
+```
+
+Declare `ctx: typer.Context` as the first parameter and the global `--config` is threaded through
+for you. Only your source's slice is validated, so inspecting one source doesn't fail because an
+unrelated source or dashboard is misconfigured; an unconfigured source reports that cleanly. This
+matters most for credentials: with it, there is exactly one place an operator puts a key.
 
 ## Secrets in config (`Secret`)
 
