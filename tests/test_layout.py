@@ -7,6 +7,7 @@ it depends on the system font and is an iterating visual concern.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from unittest import mock
@@ -16,9 +17,25 @@ from PIL import Image, ImageDraw
 from pydantic import ValidationError
 
 from kindle_dash_gen.models import DashboardData
-from kindle_dash_gen.render.builtins.glanceable import _cap_height, _cap_midline
+from kindle_dash_gen.render.builtins.glanceable import (
+    _BADGE_GAP,
+    _BADGE_INSET,
+    _BADGE_MARGIN,
+    _BADGE_MIN_WIDTH,
+    _CLOCK_INDENT,
+    _GUTTER,
+    _MARGIN,
+    _MAX_TRANSIT_BOARDS,
+    _cap_height,
+    _cap_midline,
+    _direction_label,
+    _direction_rank,
+    _from_mta,
+    _from_sf_bay_511,
+    _transit,
+)
 from kindle_dash_gen.render.layout import LayoutError, render
-from kindle_dash_gen.render.toolkit import INK, PAPER, Fonts, _resolve_face
+from kindle_dash_gen.render.toolkit import INK, PAPER, Fonts, _resolve_face, fit_font
 from kindle_dash_gen.sources.builtins.mta.model import (
     Direction,
     MtaData,
@@ -33,6 +50,7 @@ from kindle_dash_gen.sources.builtins.nws.model import (
     WeatherAlert,
 )
 from kindle_dash_gen.sources.builtins.open_meteo import model as om
+from kindle_dash_gen.sources.builtins.sf_bay_511 import model as sf
 
 NOW = datetime(2026, 7, 3, 0, 30, 0, tzinfo=UTC)  # 2026-07-02 20:30 EDT
 W, H = 1072, 1448
@@ -519,3 +537,340 @@ def test_timezone_is_required_and_validated() -> None:
             layout="glanceable",
             layout_config={"title": "NYC", "timezone": "Mars/Olympus_Mons"},
         )
+
+
+# ── Transit adapter ────────────────────────────────────────────────────────────────────────────
+# The layout draws transit through one normalized surface, so the draw code never sees a
+# provider type — the same shape the weather adapter already uses. These cover the mapping;
+# the pixel-level guarantees are further down.
+
+
+def _sf_arrival(agency, direction, line="Green-N", minutes=5):
+    return sf.TransitArrival(
+        agency=agency,
+        line=line,
+        direction=direction,
+        destination="Somewhere",
+        arrival=NOW + timedelta(minutes=minutes),
+    )
+
+
+@pytest.mark.parametrize(
+    ("direction", "expected"),
+    [
+        (sf.BartDirection.NORTH, "Northbound"),
+        (sf.BartDirection.SOUTH, "Southbound"),
+        (sf.AcTransitDirection.EAST, "Eastbound"),
+        (sf.AcTransitDirection.WEST, "Westbound"),
+        (sf.MuniDirection.INBOUND, "Inbound"),
+        (sf.MuniDirection.OUTBOUND, "Outbound"),
+        # An unrecognized code degrades to itself rather than failing the render. The vocabulary
+        # lives here and in the source's per-agency enums, so a new direction shows as a bare code.
+        ("ZZ", "ZZ"),
+    ],
+)
+def test_direction_labels_cover_every_agency_vocabulary(direction, expected) -> None:
+    assert _direction_label(direction) == expected
+
+
+def test_an_unknown_direction_sorts_last() -> None:
+    assert _direction_rank("ZZ") > _direction_rank(sf.MuniDirection.OUTBOUND)
+
+
+def test_from_mta_always_emits_both_directions() -> None:
+    # Both blocks are always drawn (an empty one shows "No trains"), which is what keeps the MTA
+    # rendering unchanged by this adapter.
+    board = StationBoard(
+        name="Union Sq",
+        arrivals_by_direction={
+            Direction.NORTH: [
+                TrainArrival(
+                    route="N", direction=Direction.NORTH, destination="Astoria", arrival=NOW
+                )
+            ]
+        },
+    )
+    (glance,) = _from_mta(MtaData(boards=[board]))
+    assert glance.label == "Union Sq"
+    assert [g.label for g in glance.groups] == ["Uptown", "Downtown"]
+    assert [a.label for a in glance.groups[0].arrivals] == ["N"]
+    assert glance.groups[1].arrivals == []  # southbound empty, still its own block
+
+
+def test_from_sf_bay_511_labels_directions_and_uses_the_line_as_the_badge() -> None:
+    board = sf.StopBoard(
+        name="Embarcadero",
+        arrivals={
+            sf.Agency.BART: {
+                sf.BartDirection.NORTH: [_sf_arrival(sf.Agency.BART, sf.BartDirection.NORTH)]
+            }
+        },
+    )
+    (glance,) = _from_sf_bay_511(sf.SfBay511Data(boards=[board]))
+    assert glance.label == "Embarcadero"
+    assert [g.label for g in glance.groups] == ["Northbound"]
+    assert [a.label for a in glance.groups[0].arrivals] == ["Green-N"]
+
+
+def test_from_sf_bay_511_prefixes_the_agency_only_when_a_board_spans_several() -> None:
+    # One place served by two operators would otherwise show two unqualified "Northbound" blocks.
+    # Muni is inserted first on purpose: dicts keep insertion order, so without the canonical
+    # agency sort this test would pass whatever order the adapter emitted.
+    shared = sf.StopBoard(
+        name="Embarcadero",
+        arrivals={
+            sf.Agency.MUNI: {
+                sf.MuniDirection.INBOUND: [
+                    _sf_arrival(sf.Agency.MUNI, sf.MuniDirection.INBOUND, line="N")
+                ]
+            },
+            sf.Agency.BART: {
+                sf.BartDirection.NORTH: [_sf_arrival(sf.Agency.BART, sf.BartDirection.NORTH)]
+            },
+        },
+    )
+    (glance,) = _from_sf_bay_511(sf.SfBay511Data(boards=[shared]))
+    assert [g.label for g in glance.groups] == ["BART Northbound", "Muni Inbound"]
+
+
+def test_from_sf_bay_511_orders_groups_canonically() -> None:
+    # The adapter orders but does not truncate: the two-block limit is geometric, so it lives in
+    # the draw code. Ordering is canonical so the panel doesn't reshuffle between runs just
+    # because the feed listed directions differently.
+    board = sf.StopBoard(
+        name="Busy",
+        arrivals={
+            sf.Agency.AC_TRANSIT: {
+                sf.AcTransitDirection.WEST: [
+                    _sf_arrival(sf.Agency.AC_TRANSIT, sf.AcTransitDirection.WEST)
+                ],
+                sf.AcTransitDirection.SOUTH: [
+                    _sf_arrival(sf.Agency.AC_TRANSIT, sf.AcTransitDirection.SOUTH)
+                ],
+                sf.AcTransitDirection.NORTH: [
+                    _sf_arrival(sf.Agency.AC_TRANSIT, sf.AcTransitDirection.NORTH)
+                ],
+            }
+        },
+    )
+    (glance,) = _from_sf_bay_511(sf.SfBay511Data(boards=[board]))
+    assert [g.label for g in glance.groups] == ["Northbound", "Southbound", "Westbound"]
+
+
+def test_only_the_first_two_direction_blocks_are_drawn() -> None:
+    # The band's pitch divides the remaining height by six (two blocks x three arrivals), so a
+    # third direction has nowhere to go.
+    board = sf.StopBoard(
+        name="Busy",
+        arrivals={
+            sf.Agency.AC_TRANSIT: {
+                d: [_sf_arrival(sf.Agency.AC_TRANSIT, d, line=d.name)]
+                for d in (
+                    sf.AcTransitDirection.NORTH,
+                    sf.AcTransitDirection.SOUTH,
+                    sf.AcTransitDirection.WEST,
+                )
+            }
+        },
+    )
+    data = DashboardData(
+        generated_at=NOW, source_data={sf.SfBay511Data: sf.SfBay511Data(boards=[board])}
+    )
+    drawn = _rendered_text(data, _CONFIG)
+    assert "Northbound" in drawn
+    assert "Southbound" in drawn
+    assert "Westbound" not in drawn
+
+
+def test_transit_combines_providers_with_mta_first() -> None:
+    # MTA first so an MTA-only dashboard's column order (and pixels) are untouched by 511 existing.
+    mta = MtaData(boards=[StationBoard(name="Union Sq", arrivals_by_direction={})])
+    bay = sf.SfBay511Data(boards=[sf.StopBoard(name="Embarcadero", arrivals={})])
+    both = DashboardData(generated_at=NOW, source_data={MtaData: mta, sf.SfBay511Data: bay})
+    assert [b.label for b in _transit(both)] == ["Union Sq", "Embarcadero"]
+    only_mta = DashboardData(generated_at=NOW, source_data={MtaData: mta})
+    assert [b.label for b in _transit(only_mta)] == ["Union Sq"]
+    only_bay = DashboardData(generated_at=NOW, source_data={sf.SfBay511Data: bay})
+    assert [b.label for b in _transit(only_bay)] == ["Embarcadero"]
+    assert _transit(DashboardData(generated_at=NOW, source_data={})) == []
+
+
+def _sf_dashboard() -> DashboardData:
+    board = sf.StopBoard(
+        name="Embarcadero",
+        arrivals={
+            sf.Agency.BART: {
+                sf.BartDirection.NORTH: [
+                    _sf_arrival(sf.Agency.BART, sf.BartDirection.NORTH, minutes=m)
+                    for m in (4, 12, 20)
+                ],
+                sf.BartDirection.SOUTH: [
+                    _sf_arrival(sf.Agency.BART, sf.BartDirection.SOUTH, line="Blue-S", minutes=m)
+                    for m in (6, 18)
+                ],
+            }
+        },
+    )
+    return DashboardData(
+        generated_at=NOW, source_data={sf.SfBay511Data: sf.SfBay511Data(boards=[board])}
+    )
+
+
+def test_renders_a_511_only_dashboard() -> None:
+    img = _render(_sf_dashboard())
+    assert img.size == (W, H)
+    assert img.mode == "L"
+
+
+def test_511_board_draws_its_direction_labels_and_local_clocks() -> None:
+    drawn = _rendered_text(_sf_dashboard(), {**_CONFIG, "timezone": "America/Los_Angeles"})
+    assert "Embarcadero" in drawn
+    assert "Northbound" in drawn
+    assert "Southbound" in drawn
+    assert "Green-N" in drawn  # the LineRef as the route badge
+    # NOW is 00:30 UTC on Jul 3 = 17:30 Pacific on Jul 2; the first arrival is +4 minutes.
+    assert "5:34 pm" in drawn
+
+
+def test_an_empty_511_direction_shows_no_trains() -> None:
+    board = sf.StopBoard(
+        name="Embarcadero",
+        arrivals={sf.Agency.BART: {sf.BartDirection.NORTH: []}},
+    )
+    data = DashboardData(
+        generated_at=NOW, source_data={sf.SfBay511Data: sf.SfBay511Data(boards=[board])}
+    )
+    assert "No trains" in _rendered_text(data, _CONFIG)
+
+
+def test_renders_both_providers_together() -> None:
+    mta = MtaData(boards=_boards())
+    bay = _sf_dashboard().source_data[sf.SfBay511Data]
+    data = DashboardData(generated_at=NOW, source_data={MtaData: mta, sf.SfBay511Data: bay})
+    drawn = _rendered_text(data, _CONFIG)
+    assert "57 St-6 Av" in drawn  # MTA board
+    assert "Embarcadero" in drawn  # 511 board
+    assert _render(data).size == (W, H)
+
+
+def test_mta_rendering_is_unchanged_by_the_transit_adapter() -> None:
+    """Pixel hashes captured from the pre-adapter layout, when MTA was drawn directly.
+
+    The adapter was a re-shaping, not a redesign: an existing NYC dashboard must look exactly as it
+    did. These are checked-in digests rather than a self-comparison, so a change to the geometry,
+    the "Uptown"/"Downtown" labels, the always-two-blocks rule, or the MTA-first ordering fails
+    here instead of quietly redrawing someone's panel.
+
+    Re-derive them against the pre-adapter layout with::
+
+        git worktree add /tmp/pre 6c14902 && (cd /tmp/pre && uv run python -c "...")
+
+    Note the digests also depend on the resolved font file and the Pillow/FreeType version, so a
+    font or Pillow bump fails this with an unhelpful message. It is worth keeping only while the
+    refactor is recent; delete it once the guarantee has stopped being interesting.
+    """
+    expected = {
+        "weather+boards": "6a39b5a7f769f6fc",
+        "boards only": "2d48e5a65fa6b652",
+        "weather only": "6711aa7eec22fb7a",
+    }
+    actual = {
+        "weather+boards": _digest(_dashboard()),
+        "boards only": _digest(_dashboard(weather=None)),
+        "weather only": _digest(_dashboard(boards=[])),
+    }
+    assert actual == expected
+
+
+def _digest(data: DashboardData) -> str:
+    return hashlib.sha256(_render(data).tobytes()).hexdigest()[:16]
+
+
+def _gutter_ink(line: str) -> int:
+    """Ink pixels in the gutter between two transit columns, for a board using route ``line``."""
+    boards = [
+        sf.StopBoard(
+            name=name,
+            arrivals={
+                sf.Agency.BART: {
+                    sf.BartDirection.NORTH: [
+                        _sf_arrival(sf.Agency.BART, sf.BartDirection.NORTH, line=line)
+                    ]
+                }
+            },
+        )
+        for name in ("Embarcadero", "Montgomery")
+    ]
+    data = DashboardData(
+        generated_at=NOW, source_data={sf.SfBay511Data: sf.SfBay511Data(boards=boards)}
+    )
+    img = _render(data)
+    pixels = img.load()
+    col_w = (W - 2 * _MARGIN - _GUTTER) / 2
+    left = int(_MARGIN + col_w) + 1
+    return sum(
+        1 for x in range(left, left + _GUTTER - 1) for y in range(img.height) if pixels[x, y] < 128
+    )
+
+
+def test_a_long_route_badge_stays_inside_its_column() -> None:
+    """A 511 LineRef is a word, not a letter, and must not spill into the next column.
+
+    Badges are centered on a shared x, which suits a one-character subway route; centering
+    "Yellow-N" on the same x pushed half of it across the gutter and through the neighbouring
+    column's clock. Only rendering surfaced it — the text was drawn, just in the wrong place — so
+    this asserts on pixels. Differencing against a short label cancels the full-width rules that
+    legitimately cross the gutter.
+    """
+    assert _gutter_ink("Yellow-Nx") == _gutter_ink("K")
+
+
+@pytest.mark.parametrize("boards", [1, 2, 3, 4, 5])
+def test_a_short_badge_is_untouched_at_any_column_count(boards: int) -> None:
+    """The badge clamps must not fire for a subway route, however narrow the columns get.
+
+    A four-column board leaves the clock almost the whole width, so without the width floor the
+    fit clamp shrank a one-character MTA badge from 50 to 18 — a silent regression the two-column
+    digest test could not see.
+    """
+    fonts = Fonts("Adwaita Sans")
+    clock_w = fonts.get(46, "Medium").getlength("12:34 pm")
+    col_w = (W - 2 * _MARGIN - _GUTTER * (boards - 1)) / boards
+    available = col_w - _CLOCK_INDENT - clock_w - _BADGE_GAP
+
+    font = fit_font(fonts, "M", "Black", 50, max(available, _BADGE_MIN_WIDTH))
+    assert font.size == 50, "badge shrank"
+    # The center clamp is a no-op precisely while the badge is narrower than the floor.
+    assert font.getlength("M") < _BADGE_MIN_WIDTH
+    assert _BADGE_MARGIN + font.getlength("M") / 2 <= _BADGE_INSET, "badge slid off its shared x"
+
+
+def test_more_than_three_transit_boards_is_an_error() -> None:
+    """The band is three columns wide; a fourth would overlap, so it fails loudly at render.
+
+    The count is only known once sources are fetched (a station maps to a board), so this is a
+    render-time LayoutError the pipeline isolates per dashboard, not a config-load check.
+    """
+    boards = [
+        StationBoard(name=f"S{i}", arrivals_by_direction={}) for i in range(_MAX_TRANSIT_BOARDS + 1)
+    ]
+    data = DashboardData(generated_at=NOW, source_data={MtaData: MtaData(boards=boards)})
+    with pytest.raises(LayoutError):
+        _render(data)
+
+
+def test_exactly_three_transit_boards_render() -> None:
+    boards = [
+        StationBoard(name=f"S{i}", arrivals_by_direction={}) for i in range(_MAX_TRANSIT_BOARDS)
+    ]
+    data = DashboardData(generated_at=NOW, source_data={MtaData: MtaData(boards=boards)})
+    assert _render(data).size == (W, H)
+
+
+def test_the_board_limit_counts_across_providers() -> None:
+    # Two MTA + two 511 is four columns just as surely as four MTA boards.
+    mta = MtaData(boards=[StationBoard(name=f"M{i}", arrivals_by_direction={}) for i in range(2)])
+    bay = sf.SfBay511Data(boards=[sf.StopBoard(name=f"B{i}", arrivals={}) for i in range(2)])
+    data = DashboardData(generated_at=NOW, source_data={MtaData: mta, sf.SfBay511Data: bay})
+    with pytest.raises(LayoutError):
+        _render(data)

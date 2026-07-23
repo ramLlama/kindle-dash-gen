@@ -140,10 +140,16 @@ preferred provider (Open-Meteo, NWS fallback), **AQI off Open-Meteo and alerts o
 independently** (each absent when its provider isn't configured), so `render()` never inspects a
 provider type. The hero draws the AQI badge (`format_aqi`) and the most-severe active alert
 (`+N more` tail) through one shared `_metric_row`, which flags an alert — or an "Unhealthy"-or-worse
-AQI (`aqi_is_unhealthy`, EPA 151+) — in bold behind the bundled `warning.png` icon.
+AQI (`aqi_is_unhealthy`, EPA 151+) — in bold behind the bundled `warning.png` icon. A peer
+`_transit` adapter does the same for the transit band, combining MTA and 511 boards into one
+normalized draw surface (MTA columns first) so the draw code never inspects a provider type.
 
-No layout draws `SfBay511Data` yet — `glanceable`'s transit panel still renders **MTA boards only**,
-so a `sf-bay-511` source is gathered and available in `source_data` but not yet displayed.
+The transit panel has the **same shape as the weather adapter**: a private `_transit(data)`
+combines whichever transit providers are present into a layout-local normalized draw surface
+(`_GlanceBoard` / `_GlanceGroup` / `_GlanceArrival`) via per-provider adapters (`_from_mta`,
+`_from_sf_bay_511`), so `glanceable` draws **both MTA subway and SF Bay 511 boards** and the draw
+methods reference no provider type. Together the `_weather` and `_transit` adapters realize the same
+principle: "a layout reconciles multiple providers in its own local adapter."
 
 See [architecture.md](architecture.md) for data flow, the NWS multi-step fetch, the Open-Meteo
 concurrent forecast+AQI fetch, MTA feed deduplication, the 511 stop fan-out, and the
@@ -242,9 +248,23 @@ subcommand loads it on demand via `_config(ctx)`.
   trips with no vehicle assigned) and are skipped; a *half*-null pair **raises**, since a frozen
   dataclass does no runtime type checking and `line=None` would otherwise reach a layout.
   Direction casing and surrounding whitespace are tolerated.
-- **Multiple dashboards, one fetch.** Config has `dashboards: dict[str, Dashboard]` (named
-  `[dashboards.<name>]` tables). `gather()` runs once and every dashboard renders from that shared
-  data to its own `output_path`.
+- **Multiple dashboards, one fetch — and no per-dashboard source selection.** Config has
+  `dashboards: dict[str, Dashboard]` (named `[dashboards.<name>]` tables). `gather()` runs once and
+  every dashboard renders from that **one shared** `source_data`. There is no way to route a source
+  to only some dashboards: a config with both an NYC and an SF transit source draws **all** their
+  boards on **every** dashboard. To get a clean NYC-only board and a separate SF-only board, use
+  **separate config files** (separate `[dashboards.*]` tables in one config would each still draw
+  every source). Likewise the layout draws a **single** weather hero (one location) — it reconciles
+  multiple weather *providers* for that one spot but cannot show two cities' weather at once, and
+  since Open-Meteo is preferred over NWS, configuring the two for *different* cities silently makes
+  the hero the Open-Meteo one.
+- **Transit boards are capped at three columns.** `glanceable` draws at most
+  `_MAX_TRANSIT_BOARDS = 3` transit boards, counted **across all providers combined** (two MTA + two
+  511 is four, and fails). `_transit_boards` raises `LayoutError` on a fourth, because past three the
+  clocks and route badges collide. This is a **render-time** check, not config-load: a station only
+  becomes a board once its source is fetched, so the count isn't known statically. The pipeline
+  isolates the failure to the offending dashboard (logged, skipped, its last image preserved).
+  Documented in `config.example.toml`.
 - **One renderer: the pillow layout.** Every dashboard renders deterministically via a local
   pillow **layout** (free, offline, exact — never garbles data). There is no backend concept and no
   dispatch: a dashboard just names a `layout`. A layout resolves its `font` family via fontconfig

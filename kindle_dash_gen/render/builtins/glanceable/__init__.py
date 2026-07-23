@@ -23,6 +23,7 @@ from kindle_dash_gen.render.toolkit import (
     INK,
     PAPER,
     Fonts,
+    LayoutError,
     aqi_is_unhealthy,
     fit_font,
     format_apparent,
@@ -31,14 +32,11 @@ from kindle_dash_gen.render.toolkit import (
     load_asset_image,
     weather_icon,
 )
-from kindle_dash_gen.sources.builtins.mta.model import (
-    Direction,
-    MtaData,
-    StationBoard,
-    TrainArrival,
-)
+from kindle_dash_gen.sources.builtins.mta.model import Direction, MtaData, StationBoard
 from kindle_dash_gen.sources.builtins.nws.model import NwsData
 from kindle_dash_gen.sources.builtins.open_meteo.model import OpenMeteoData
+from kindle_dash_gen.sources.builtins.sf_bay_511.model import Agency as SfAgency
+from kindle_dash_gen.sources.builtins.sf_bay_511.model import SfBay511Data
 
 _PACKAGE = "kindle_dash_gen.render.builtins.glanceable"  # this plugin's own package, for assets
 _MARGIN = 44
@@ -168,6 +166,151 @@ def _weather(data: DashboardData) -> _GlanceWeather | None:
     return replace(base, aqi=aqi, alerts=alerts)
 
 
+# ── Transit adapter ────────────────────────────────────────────────────────────────────────────
+# The transit side mirrors the weather adapter above: each provider's own board type is normalized
+# into one draw surface, so the drawing code below never inspects a provider type. The providers
+# genuinely differ — MTA runs uptown/downtown, while a Bay Area board can carry several
+# operators with different direction vocabularies — and that is all resolved into a plain label
+# here, before anything is drawn.
+
+
+@dataclass(frozen=True, kw_only=True)
+class _GlanceArrival:
+    """One upcoming vehicle: when it arrives and the badge identifying its route."""
+
+    clock: datetime  # aware UTC; converted to the layout's timezone at draw time
+    label: str  # MTA route letter ("N"), 511 LineRef ("Green-N")
+
+
+@dataclass(frozen=True, kw_only=True)
+class _GlanceGroup:
+    """One direction block: its heading and the arrivals under it."""
+
+    label: str  # "Uptown", "Northbound", "BART Northbound" — already resolved for display
+    arrivals: list[_GlanceArrival]
+
+
+@dataclass(frozen=True, kw_only=True)
+class _GlanceBoard:
+    """One station column: a heading plus its ordered direction blocks.
+
+    ``groups`` is ordered but *not* truncated: which directions matter is the adapter's call, while
+    how many fit is geometry, so the draw code takes the first ``_MAX_BLOCKS``.
+    """
+
+    label: str
+    groups: list[_GlanceGroup]
+
+
+# Direction code → what a rider reads. Keyed by the raw string value, so it serves every agency's
+# own direction enum at once (they are StrEnums, and "N" means northbound whoever emitted it).
+_DIRECTION_LABELS = {
+    "N": "Northbound",
+    "S": "Southbound",
+    "E": "Eastbound",
+    "W": "Westbound",
+    "IB": "Inbound",
+    "OB": "Outbound",
+}
+
+# Canonical order for direction blocks, so a board's columns don't reshuffle between runs just
+# because the feed happened to list its directions in a different order.
+_DIRECTION_ORDER = ("N", "S", "E", "W", "IB", "OB")
+
+
+def _direction_label(direction: str) -> str:
+    """A readable label for a direction code, falling back to the code itself."""
+    return _DIRECTION_LABELS.get(str(direction), str(direction))
+
+
+def _from_mta(mta: MtaData) -> list[_GlanceBoard]:
+    """MTA boards as draw surfaces: always uptown then downtown.
+
+    Both blocks are emitted even when a direction has no trains (it draws "No trains"), which is
+    what this layout has always done — the adapter is a re-shaping, not a change in output.
+    """
+    return [
+        _GlanceBoard(
+            label=board.label,
+            groups=[
+                _GlanceGroup(label=label, arrivals=_mta_arrivals(board, direction))
+                for label, direction in (("Uptown", Direction.NORTH), ("Downtown", Direction.SOUTH))
+            ],
+        )
+        for board in mta.boards
+    ]
+
+
+def _mta_arrivals(board: StationBoard, direction: Direction) -> list[_GlanceArrival]:
+    return [
+        _GlanceArrival(clock=a.arrival, label=a.route)
+        for a in board.arrivals_by_direction.get(direction, [])
+    ]
+
+
+def _from_sf_bay_511(bay: SfBay511Data) -> list[_GlanceBoard]:
+    """511 boards as draw surfaces, flattening agency → direction into ordered blocks.
+
+    A board can be served by several operators, so each (agency, direction) pair becomes its own
+    block. The agency is named in the label only when the board actually spans more than one —
+    otherwise every label would carry a redundant prefix.
+    """
+    boards = []
+    for board in bay.boards:
+        multi_agency = len(board.arrivals) > 1
+        groups = []
+        for agency in sorted(board.arrivals, key=list(SfAgency).index):
+            by_direction = board.arrivals[agency]
+            for direction in sorted(by_direction, key=_direction_rank):
+                label = _direction_label(direction)
+                groups.append(
+                    _GlanceGroup(
+                        label=f"{agency.label} {label}" if multi_agency else label,
+                        arrivals=[
+                            _GlanceArrival(clock=a.arrival, label=a.line)
+                            for a in by_direction[direction]
+                        ],
+                    )
+                )
+        boards.append(_GlanceBoard(label=board.label, groups=groups))
+    return boards
+
+
+def _direction_rank(direction: str) -> int:
+    value = str(direction)
+    return _DIRECTION_ORDER.index(value) if value in _DIRECTION_ORDER else len(_DIRECTION_ORDER)
+
+
+def _transit(data: DashboardData) -> list[_GlanceBoard]:
+    """Every transit provider's boards, as one ordered list of draw surfaces.
+
+    MTA first, so adding a Bay Area source to an existing dashboard leaves its columns exactly
+    where they were. A provider that isn't configured simply contributes nothing.
+    """
+    boards: list[_GlanceBoard] = []
+    mta = data.source_data.get(MtaData)
+    if mta is not None:
+        boards.extend(_from_mta(mta))
+    bay = data.source_data.get(SfBay511Data)
+    if bay is not None:
+        boards.extend(_from_sf_bay_511(bay))
+    return boards
+
+
+_GUTTER = 56  # whitespace between station columns
+_MAX_TRANSIT_BOARDS = 3  # columns the band has room for; a fourth would overlap
+_MAX_BLOCKS = 2  # direction blocks a column has room for
+_MAX_ARRIVALS = 3  # arrivals shown per direction block
+_CLOCK_INDENT = 6  # left inset of an arrival's clock within its column
+_BADGE_GAP = 12  # clear space between an arrival's clock and its route badge
+_BADGE_INSET = 28  # badge center's offset from the column's right edge
+_BADGE_MARGIN = 4  # keep a shrunken badge this far inside the column's right edge
+# Floor for the badge's fitting width, chosen so that *neither* badge clamp can touch a label
+# narrower than it: at this width the centered badge's right edge lands exactly on the margin.
+# That makes "short badges render exactly as they always have" one checkable property rather
+# than a coincidence of column count — a 4-column board leaves almost no room beside the clock,
+# and without the floor a one-character subway route would shrink to a third of its size.
+_BADGE_MIN_WIDTH = 2 * (_BADGE_INSET - _BADGE_MARGIN)
 _ROW_SIZE = 40  # nominal type size of the hero's metric rows (wind / AQI / alert)
 _ICON_SLOT = 260  # horizontal space reserved for the hero's weather icon, at the right
 _WARN_ICON_SCALE = 1.15  # warning icon height as a multiple of cap height, so it reads as equal
@@ -232,7 +375,9 @@ class GlanceableConfig(BaseModel):
 class _Glanceable(Layout[GlanceableConfig]):
     """Renders the glanceable layout: hero weather, an hourly strip, and per-station arrival boards.
 
-    Everything is measured against ``width``/``height`` so the layout adapts to the panel size.
+    Everything is measured against ``width``/``height`` so the layout adapts to the panel size. The
+    transit band is three columns wide (across all providers combined); a dashboard whose sources
+    produce more boards than that raises :class:`LayoutError` rather than drawing a garbled panel.
     """
 
     Config = GlanceableConfig
@@ -255,8 +400,7 @@ class _Glanceable(Layout[GlanceableConfig]):
         if weather is not None:
             y = self._hero(y, weather)
             y = self._hourly(y, weather)
-        mta = data.source_data.get(MtaData)
-        self._subway(y, mta.boards if mta is not None else [])
+        self._transit_boards(y, _transit(data))
         return self.img
 
     def _paste_icon(self, name: str, cx: float, cy: float, box: int) -> None:
@@ -383,7 +527,7 @@ class _Glanceable(Layout[GlanceableConfig]):
         return bottom + 30
 
     def _direction_block(
-        self, x: float, y: float, w: float, label: str, arrivals: list[TrainArrival], pitch: float
+        self, x: float, y: float, w: float, label: str, arrivals: list[_GlanceArrival], pitch: float
     ) -> float:
         self.d.text((x, y), label, font=self.fonts.get(32, "Bold"), fill=INK, anchor="la")
         y += 52
@@ -392,49 +536,80 @@ class _Glanceable(Layout[GlanceableConfig]):
                 (x + 12, y), "No trains", font=self.fonts.get(34, "Regular"), fill=INK, anchor="la"
             )
             return y + pitch
-        # This deterministic layout is sized for 3 rows per direction; it shows the soonest 3 of
-        # the (uncapped) board and drops the rest. Truncation is the layout's call, not the fetch's.
-        for a in arrivals[:3]:
-            # departure clock time on the left, route letter (bold, no badge) on the right; both on
+        # This deterministic layout is sized for _MAX_ARRIVALS rows per direction; it shows the
+        # soonest few of the (uncapped) board and drops the rest. Truncation is the layout's
+        # call, not the fetch's.
+        for a in arrivals[:_MAX_ARRIVALS]:
+            # departure clock time on the left, route badge (bold, no chip) on the right; both on
             # a shared baseline so the all-caps route lines up with the time's descenders
             baseline = y + pitch * 0.4 + 16
-            local = a.arrival.astimezone(self.tz)
+            local = a.clock.astimezone(self.tz)
             clock = f"{local.strftime('%-I:%M')} {local.strftime('%p').lower()}"
+            clock_font = self.fonts.get(46, "Medium")
             self.d.text(
-                (x + 6, baseline), clock, font=self.fonts.get(46, "Medium"), fill=INK, anchor="ls"
+                (x + _CLOCK_INDENT, baseline), clock, font=clock_font, fill=INK, anchor="ls"
             )
-            # center each route letter on a common x so they line up regardless of glyph width
-            self.d.text(
-                (x + w - 28, baseline),
-                a.route,
-                font=self.fonts.get(50, "Black"),
-                fill=INK,
-                anchor="ms",
-            )
+            self._route_badge(a.label, x, w, baseline, clock_font.getlength(clock))
             y += pitch
         return y + 8
 
-    def _subway(self, y: int, boards: list[StationBoard]) -> None:
+    def _route_badge(self, label: str, x: float, w: float, baseline: float, clock_w: float) -> None:
+        """Draw a route badge at the right of a column, clamped inside it.
+
+        Badges are centered on a common x so they line up down the column regardless of glyph
+        width — which is all a one- or two-character subway route needs. A 511 LineRef is a whole
+        word ("Yellow-N"), and centering that on the same x pushes half of it past the column into
+        the neighbouring one. So the badge shrinks to the space the clock leaves, and its center
+        slides left as needed to keep its right edge inside the column.
+
+        Neither clamp touches a label narrower than ``_BADGE_MIN_WIDTH``, which is what keeps
+        existing subway boards rendering pixel-for-pixel as before whatever their column count.
+
+        The right edge is always inside the column, even when ``fit_font`` bottoms out at its
+        minimum size. The *left* edge is not clamped: a label too wide to fit beside the clock even
+        at that minimum would overprint it. Nothing in the bundled sources gets close, but a route
+        name of a dozen-plus characters in a four-column board would.
+        """
+        available = w - _CLOCK_INDENT - clock_w - _BADGE_GAP
+        font = fit_font(self.fonts, label, "Black", 50, max(available, _BADGE_MIN_WIDTH))
+        center = min(x + w - _BADGE_INSET, x + w - _BADGE_MARGIN - font.getlength(label) / 2)
+        self.d.text((center, baseline), label, font=font, fill=INK, anchor="ms")
+
+    def _transit_boards(self, y: int, boards: list[_GlanceBoard]) -> None:
+        """Draw one column per board, each with up to two direction blocks.
+
+        ``_MAX_BLOCKS`` is a geometric limit, not a data one: the pitch below divides the remaining
+        height by blocks x arrivals, so a board offering more directions shows the ones its adapter
+        ranked first.
+        """
         if len(boards) == 0:
             return
+        if len(boards) > _MAX_TRANSIT_BOARDS:
+            # Only known here: a station maps to a board once its source is fetched. Past three
+            # columns the clocks and route badges collide, so fail loudly rather than draw a
+            # garbled panel — the pipeline isolates this to the offending dashboard.
+            raise LayoutError(
+                f"glanceable draws at most {_MAX_TRANSIT_BOARDS} transit boards, "
+                f"got {len(boards)}; reduce the stations this dashboard's sources configure"
+            )
         n = len(boards)
-        gutter = 56  # whitespace between station columns
-        col_w = (self.w - 2 * _MARGIN - gutter * (n - 1)) / n
-        # Distribute the leftover vertical space across the (up to) six arrival rows so the band
-        # fills the height instead of clustering at the top. Deterministic layout makes this exact.
+        col_w = (self.w - 2 * _MARGIN - _GUTTER * (n - 1)) / n
+        # Distribute the leftover vertical space across every arrival row so the band fills the
+        # height instead of clustering at the top. Deterministic layout makes this exact.
         block_gap = 28
-        fixed = 68 + 2 * 52 + 2 * 8 + block_gap  # name area, two labels, two trailers, inter-gap
-        pitch = max(58, min(96, (self.h - _MARGIN - y - fixed) / 6))
+        # name area, then each block's label and trailer, then the gap between the two blocks
+        fixed = 68 + _MAX_BLOCKS * (52 + 8) + block_gap
+        pitch = max(58, min(96, (self.h - _MARGIN - y - fixed) / (_MAX_BLOCKS * _MAX_ARRIVALS)))
         for i, board in enumerate(boards):
-            x = _MARGIN + i * (col_w + gutter)
+            x = _MARGIN + i * (col_w + _GUTTER)
             self.d.text((x, y), board.label, font=self.fonts.get(44, "Bold"), fill=INK, anchor="la")
             name_b = y + 58
             self.d.line((x, name_b, x + col_w, name_b), fill=INK, width=2)
             cy: float = name_b + 18
-            north = board.arrivals_by_direction.get(Direction.NORTH, [])
-            south = board.arrivals_by_direction.get(Direction.SOUTH, [])
-            cy = self._direction_block(x, cy, col_w, "Uptown", north, pitch)
-            self._direction_block(x, cy + block_gap, col_w, "Downtown", south, pitch)
+            for block, group in enumerate(board.groups[:_MAX_BLOCKS]):
+                if block > 0:
+                    cy += block_gap
+                cy = self._direction_block(x, cy, col_w, group.label, group.arrivals, pitch)
 
 
 register_layout("glanceable", _Glanceable)

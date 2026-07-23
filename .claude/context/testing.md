@@ -46,7 +46,14 @@ Run with `uv run pytest` (config in `pyproject.toml`: `testpaths = ["tests"]`,
 - `test_layout.py` — the layout registry: `validate_layout`/`build_layout` config validation,
   dispatch, `Fonts` resolution, `LayoutError`, that `glanceable`'s `timezone` is required and
   rejects an unknown zone at validation, and that a render is pixel-identical across host timezones
-  (the configured `timezone` is the only thing that may change the clock it draws).
+  (the configured `timezone` is the only thing that may change the clock it draws). It also guards
+  the transit adapter: `test_mta_rendering_is_unchanged_by_the_transit_adapter` pins the
+  pre-adapter output with **checked-in SHA-256 digests** (weather+boards / boards-only /
+  weather-only) so making the transit band provider-agnostic could not shift a single MTA pixel, and
+  a test drives a four-column board (two MTA + two 511) to assert the `_MAX_TRANSIT_BOARDS` cap
+  raises `LayoutError`. Note what a digest test cannot catch: text drawn in the *wrong place* still
+  hashes as "drawn" until the geometry itself changes — the 511 badge overflow that shipped past a
+  green suite was only visible in a rendered PNG (see the style guide).
 - `test_weather.py` — NWS (`nws` source) multi-step fetch parsing, `_day_high_low` (exact-day match,
   including the evening case where an expired daytime period must report `None` rather than borrow
   tomorrow's high), the `as_of`-anchored "today", apparent-temp series, observation/raining

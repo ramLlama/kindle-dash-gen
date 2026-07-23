@@ -77,6 +77,17 @@ live in `pyproject.toml` (`[tool.ruff]`).
   Open-Meteo `timezone=auto` note (a real 18.1-vs-20.8 high under a UTC aggregation window) and the
   nyct-gtfs host-local round-trip note are both written this way, and both are load-bearing: each
   documents a change that *looks* like a simplification but is wrong.
+- **Inspect a real render for pixel-affecting layout work — tests can't see misplaced text.** A
+  test asserts text *was drawn*, not *where*; a badge centered into the neighbouring column passes
+  every assertion and only a rendered PNG shows the collision. When you touch geometry, look at the
+  actual image, and pin the intended output with a checked-in digest
+  (`test_mta_rendering_is_unchanged_by_the_transit_adapter`) so a later 1px regression fails loudly.
+- **A "no-op for the common case" claim must be checked across the whole parameter range**, not
+  just the fixture. A refactor that "preserves existing subway boards" was digest-tested only at two
+  columns; the same code silently shrank badges from size 50 to 18 at four columns. When you assert
+  behavior is unchanged for a class of inputs, verify at the extremes of every parameter (here,
+  column count) — or derive a constant so the property holds by construction, as `_BADGE_MIN_WIDTH`
+  does.
 
 ## Python-specific conventions (from global user prefs, honored here)
 

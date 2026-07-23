@@ -110,6 +110,11 @@ hourly_hours = 4       # number of upcoming hourly forecasts to include
 #   # `lines` optionally narrows a busy stop to the routes you care about:
 #   #   lines = ["N", "38R"]
 
+# The bundled glanceable layout draws at most THREE transit boards (stations) per dashboard,
+# across all transit sources combined — a fourth column would overlap, so it errors out and
+# that dashboard is skipped. Split stations across dashboards, or into separate configs, to
+# stay within three.
+#
 # One or more output dashboards, each keyed by a name ([dashboards.<name>]). A single run gathers
 # every source's data once and renders every dashboard from it, writing each to its own path.
 # The name appears in the run's log lines. At least one dashboard is required.

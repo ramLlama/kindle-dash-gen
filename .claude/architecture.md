@@ -330,7 +330,7 @@ default-less** `timezone: ZoneInfo`.
 **A layout owns display-time conversion.** Everything it is handed is aware UTC, so a bare
 `strftime` would print UTC. `glanceable` stores `self.tz = config.timezone` and applies
 `.astimezone(self.tz)` at all three formatting sites: the title clock, the hourly strip labels, and
-the subway board clock. `timezone` is typed `ZoneInfo` directly — pydantic 2.9+ parses the IANA
+the transit board clock. `timezone` is typed `ZoneInfo` directly — pydantic 2.9+ parses the IANA
 name from TOML and rejects an unknown zone at config load, so there is no custom validator. It has
 no default on purpose: a default would silently render the wrong clock rather than fail. This is
 also the piece that makes one process able to render a New York and a Bay Area dashboard from the
@@ -367,8 +367,39 @@ single shared `gather()`. `docs/plugins.md` states the contract for plugin autho
   bold behind the bundled `assets/icons/warning.png`. The icon is sized and centered off the row
   font's **cap band** (`_cap_height`/`_cap_midline`), not Pillow's `lm` anchor, which centers the em
   box (ascent + descent) and so leaves a small-descent face's ink well below the anchor.
-  This is the concrete realization of the "a layout reconciles multiple providers in its own local
-  adapter" principle. See `docs/plugins.md` for the full contract.
+  It carries a **peer transit adapter** built the same way: `_transit(data)` combines whichever
+  transit providers are present into an ordered list of normalized draw surfaces (`_GlanceBoard` =
+  a label + ordered `_GlanceGroup`s; a `_GlanceGroup` = a direction label + `_GlanceArrival`s, each
+  an aware-UTC clock + a route-badge string), via per-provider adapters `_from_mta` /
+  `_from_sf_bay_511`. **MTA boards come first**, so adding a 511 source to an existing dashboard
+  leaves the MTA columns where they were. The draw methods (`_transit_boards`, `_direction_block`)
+  reference no provider type, exactly as `_weather` established. Two adapter-vs-draw seams are
+  deliberate: **ordering is the adapter's job, truncation is the draw code's** (a board's groups are
+  ordered but the draw takes only the first `_MAX_BLOCKS = 2`, pure geometry); and `_from_sf_bay_511`
+  flattens agency → direction into ordered groups (agency by `Agency` enum order, direction by a
+  canonical `_DIRECTION_ORDER` rank) and **prefixes the agency name** ("BART Northbound") only when
+  a board spans more than one operator. Direction labels come from `_DIRECTION_LABELS` keyed by the
+  raw string value (N → Northbound, IB → Inbound, …), which serves all four of 511's per-agency
+  direction enums at once precisely *because* they compare and hash as their string value (the same
+  property the model warns about, exploited here).
+
+  The whole transit band is **three columns wide** — `_transit_boards` raises `LayoutError` past
+  `_MAX_TRANSIT_BOARDS = 3` boards **counted across every provider** (past three the clocks and
+  badges collide). It is a render-time check, since a station only becomes a board once fetched.
+  Route badges are drawn in `_route_badge`, and a badge subtlety is worth recording because **only
+  a rendered PNG revealed it, never a test**: 511 LineRefs are words ("Yellow-N"), not single
+  letters like MTA routes ("N"), and a badge centered on the column's shared right-edge x pushed
+  half of a long label across the gutter into the *next* column's clock. Every test passed — the
+  text *was* drawn, just in the wrong place. The fix shrinks the label to the space the clock
+  leaves (`fit_font`) and clamps its center so the right edge stays inside the column; the width
+  floor `_BADGE_MIN_WIDTH = 2 * (_BADGE_INSET - _BADGE_MARGIN)` is derived so that **neither clamp
+  ever touches a short (subway) badge at any column count** — an earlier hardcoded floor silently
+  shrank MTA badges from size 50 to 18 on a four-column board, invisible to the two-column digest
+  test. `test_mta_rendering_is_unchanged_by_the_transit_adapter` pins the pre-adapter output with
+  checked-in SHA-256 digests (weather+boards, boards-only, weather-only) and fails on a 1px change:
+  the load-bearing safety net for this refactor.
+  Both adapters are the concrete realization of the "a layout reconciles multiple providers in its
+  own local adapter" principle. See `docs/plugins.md` for the full contract.
 
 ### Post-process (render/postprocess.py)
 
